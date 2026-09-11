@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robot-agent-protocol"
+version = "0.1.0"
+description = "Versioned contracts shared by Robot Agent planner and control"
+requires-python = ">=3.11,<3.13"
+dependencies = ["pydantic>=2.10,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_agent_protocol"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

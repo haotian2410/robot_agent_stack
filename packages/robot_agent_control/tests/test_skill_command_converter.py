@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from demo.skill_command.converter import CommandConversionError, SkillCommandConverter, convert_file
+from robot_agent_control.command.converter import CommandConversionError, SkillCommandConverter, convert_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

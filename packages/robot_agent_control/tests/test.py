@@ -14,16 +14,12 @@ from typing import Any, Mapping
 import mujoco.viewer
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from skills.motion.move.skill import MoveSkill
-from skills.manipulation.grasp.skill import GraspSkill
-from skills.manipulation.press.skill import PressSkill
-from skills.manipulation.push_pull.skill import PushPullSkill
-from skills.manipulation.release.skill import ReleaseSkill
-from utils import SceneRobotRuntime
+from robot_agent_control.skills.motion.move.skill import MoveSkill
+from robot_agent_control.skills.manipulation.grasp.skill import GraspSkill
+from robot_agent_control.skills.manipulation.press.skill import PressSkill
+from robot_agent_control.skills.manipulation.push_pull.skill import PushPullSkill
+from robot_agent_control.skills.manipulation.release.skill import ReleaseSkill
+from robot_agent_control.utils import SceneRobotRuntime
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("test_config_001.json")

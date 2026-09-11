@@ -11,9 +11,10 @@ from typing import Any
 
 import mujoco
 
-from demo.common.registry import SceneRegistry
-from demo.skill_command.converter import SkillCommandConverter
-from demo.skill_command.runtime import SkillRuntime
+from robot_agent_control.command.registry import SceneRegistry
+from robot_agent_control.command.converter import SkillCommandConverter
+from robot_agent_control.command.runtime import SkillRuntime
+from robot_agent_control.robot_profile import RobotProfile
 
 from .contracts import (
     CommandDocument,
@@ -49,7 +50,27 @@ class ControlExecutor:
             else command_document
         )
         mode = ViewerMode(viewer_mode)
-        registry, session = self._preflight(document, headless=mode == ViewerMode.HEADLESS)
+        try:
+            registry, session = self._preflight(document, headless=mode == ViewerMode.HEADLESS)
+        except Exception as exc:
+            code = getattr(exc, "code", "INTERNAL_ERROR")
+            report = ExecutionReport(
+                success=False,
+                robot=document.robot,
+                scene=document.scene,
+                started_at=started,
+                finished_at=datetime.now(UTC),
+                commands_total=len(document.commands),
+                commands_started=0,
+                commands_completed=0,
+                steps=[],
+                failure=ExecutionFailure(error_code=str(code), error_message=str(exc), recoverable=False),
+            )
+            if output_dir:
+                output = Path(output_dir).resolve()
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "execution_report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            return report
         trace_path = Path(output_dir).resolve() / "skill_trace.jsonl" if output_dir else None
         if trace_path:
             trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +86,12 @@ class ControlExecutor:
         state = {"started": 0, "completed": 0, "failure": None}
 
         if mode == ViewerMode.HEADLESS:
-            self._run(document, registry, session, converter, reports, state, None, mode, trace_path)
+            try:
+                self._run(document, registry, session, converter, reports, state, None, mode, trace_path)
+            except Exception as exc:
+                state["failure"] = ExecutionFailure(
+                    error_code="INTERNAL_ERROR", error_message=str(exc), recoverable=False
+                )
         else:
             import mujoco.viewer
 
@@ -81,17 +107,15 @@ class ControlExecutor:
                 self._configure_camera(viewer, session.runtime)
                 session.runtime.attach_viewer(viewer)
                 viewer.sync()
-                self._run(
-                    document,
-                    registry,
-                    session,
-                    converter,
-                    reports,
-                    state,
-                    (viewer, continue_event),
-                    mode,
-                    trace_path,
-                )
+                try:
+                    self._run(
+                        document, registry, session, converter, reports, state,
+                        (viewer, continue_event), mode, trace_path,
+                    )
+                except Exception as exc:
+                    state["failure"] = ExecutionFailure(
+                        error_code="INTERNAL_ERROR", error_message=str(exc), recoverable=False
+                    )
                 while viewer.is_running():
                     viewer.sync()
                     time.sleep(1.0 / session.runtime.playback_fps)
@@ -140,20 +164,25 @@ class ControlExecutor:
                 f"scene fingerprint mismatch: expected {document.scene_fingerprint}, got {actual_hash}",
             )
         registry = SceneRegistry(registry_path, scene_path=scene)
+        # Preflight against a raw model before constructing SkillRuntime.  This
+        # keeps an incompatible robot from initializing controllers or viewer
+        # state as a side effect of validation.
+        preflight_model = mujoco.MjModel.from_xml_path(str(scene))
+        profile_path = Path(__file__).resolve().parents[4] / "configs" / "robots" / f"{document.robot}.yaml"
+        try:
+            profile = RobotProfile.load(profile_path)
+            profile.validate_model(preflight_model, document.runtime.end_effector_site)
+        except Exception as exc:
+            raise ExecutionPreflightError("ROBOT_MODEL_INCOMPATIBLE", str(exc)) from exc
+        self._validate_registry_sources(preflight_model, registry)
+        probe = SkillCommandConverter(registry.data)
+        for index, command in enumerate(document.commands, 1):
+            probe.convert_command(command.model_dump(), index)
         runtime = document.runtime.model_dump()
         runtime["realtime"] = not headless
         if headless:
             runtime["minimum_playback_duration"] = 0.0
         session = SkillRuntime(registry, runtime)
-        self._validate_robot(session.model, document.runtime.end_effector_site)
-        self._validate_registry_sources(session.model, registry)
-
-        # Pure conversion catches unsupported skills, targets, anchors and
-        # actions before a viewer is opened. It intentionally does no collision
-        # probing because live state belongs to execution.
-        probe = SkillCommandConverter(registry.data)
-        for index, command in enumerate(document.commands, 1):
-            probe.convert_command(command.model_dump(), index)
         return registry, session
 
     @staticmethod
@@ -296,8 +325,10 @@ class ControlExecutor:
     def _failure(command, runtime_step_id, code, message, recoverable=False):
         return ExecutionFailure(
             command_id=command.command_id,
-            skill_plan_step_id=command.source_skill_step_id,
+            source_skill_step_id=command.source_skill_step_id,
             runtime_step_id=runtime_step_id,
+            skill_name=command.skill_name,
+            target=str(command.parameters.get("target", "")),
             error_code=code,
             error_message=message,
             recoverable=recoverable,
@@ -319,7 +350,7 @@ class ControlExecutor:
             return
         event = {
             "timestamp": datetime.now(UTC).isoformat(),
-            "skill_plan_step_id": command.source_skill_step_id,
+            "source_skill_step_id": command.source_skill_step_id,
             "command_id": command.command_id,
             "runtime_step_id": runtime_step_id,
             "skill": command.skill_name,

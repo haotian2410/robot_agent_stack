@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .contracts import ExecutionBundle
+from robot_agent_protocol import ExecutionBundle, validate_bundle_consistency
 
 
 def execute_bundle(
@@ -16,6 +16,7 @@ def execute_bundle(
         bundle = ExecutionBundle.model_validate_json(
             Path(bundle).read_text(encoding="utf-8")
         )
+    validate_bundle_consistency(bundle)
     return ControlExecutor().execute(
         bundle.commands,
         viewer_mode=viewer_mode,

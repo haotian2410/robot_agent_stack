@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0,str(Path(__file__).parents[1]/"src"))
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.contracts.task_intent import TaskStatus
 from robot_agent_sim.grounding.iou import iou,match_detections

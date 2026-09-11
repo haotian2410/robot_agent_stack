@@ -1,0 +1,5 @@
+{
+  "post_grasp_lift_m": 0.125,
+  "post_release_retreat_m": 0.23,
+  "retreat_frame": "tool_relative"
+}

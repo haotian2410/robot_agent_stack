@@ -1,0 +1,33 @@
+name: robot-agent-stack
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install headless Mesa dependencies
+        run: sudo apt-get update && sudo apt-get install -y libosmesa6-dev libgl1-mesa-dri libglu1-mesa
+      - name: Install all packages from a clean environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e packages/robot_agent_protocol
+          python -m pip install -e packages/robot_agent_control
+          python -m pip install -e 'packages/robot_agent_sim[dev]'
+      - name: Run protocol, package, integration and e2e tests
+        run: |
+          pytest -q packages/robot_agent_protocol/tests packages/robot_agent_control/tests packages/robot_agent_sim/tests tests/integration tests/e2e

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+from robot_agent_protocol import CommandDocument, ExecutionBundle, ExecutionOptions, SkillCommand, scene_sha256
+
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
-from .contracts import ExecutionBundle
 from .interaction_registry_builder import build_authored_registry
 
 
@@ -17,6 +19,20 @@ REGION_TO_ANCHOR = {
     "container_interior": "interior",
     "button_surface": "button_surface",
 }
+
+
+def _execution_profile() -> dict[str, float]:
+    """Load deterministic motion macros from the monorepo profile."""
+    root = Path(os.environ.get("ROBOT_AGENT_STACK_ROOT", Path(__file__).resolve().parents[5]))
+    path = root / "configs" / "execution_profiles" / "default.yaml"
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                return {str(key): float(val) for key, val in value.items()}
+        except (OSError, ValueError, TypeError):
+            pass
+    return {"post_grasp_lift_m": 0.125, "post_release_retreat_m": 0.23}
 
 
 def compile_execution_bundle(
@@ -29,16 +45,6 @@ def compile_execution_bundle(
     route: str,
     robot: str = "ur5e",
 ) -> ExecutionBundle:
-    try:
-        from robot_agent_control import CommandDocument, ExecutionOptions, SkillCommand
-        from robot_agent_control.contracts import scene_sha256
-    except ModuleNotFoundError as exc:
-        if exc.name and exc.name.startswith("robot_agent_control"):
-            raise ValueError(
-                "control dependency is not installed; run "
-                "python -m pip install -e /home/cscvlab/lht/robot-agent-control"
-            ) from exc
-        raise
 
     if robot != "ur5e":
         raise ValueError("control execution currently supports ur5e only")
@@ -53,6 +59,7 @@ def compile_execution_bundle(
     operations = {item.operation_id: item for item in grounded_task.operations}
 
     commands: list[SkillCommand] = []
+    profile = _execution_profile()
 
     def add(skill: str, target: str, source_step: str, **parameters: Any) -> None:
         commands.append(
@@ -68,7 +75,7 @@ def compile_execution_bundle(
         operation = operations[step.operation_id]
         target = step.target_object
         if step.skill_name == "search":
-            raise ValueError("UNRESOLVED_PERCEPTION_STEP: search must finish before execution")
+            raise ValueError("PERCEPTION_REQUIRED: search must finish before execution")
         if not target:
             raise ValueError(f"skill {step.step_id} has no grounded target")
         if target not in objects and target != "home":
@@ -80,7 +87,9 @@ def compile_execution_bundle(
             spatial = objects[target].get("spatial", {})
             desired = REGION_TO_ANCHOR.get(step.semantic_target or "")
             anchors = spatial.get("anchors", {})
-            anchor = desired if desired in anchors else spatial.get("default_anchor")
+            if desired is not None and desired not in anchors:
+                raise ValueError(f"ANCHOR_NOT_FOUND: {target}.{desired}")
+            anchor = desired if desired is not None else spatial.get("default_anchor")
             parameters = {"planning_method": "auto"}
             if anchor:
                 parameters["anchor"] = anchor
@@ -101,7 +110,7 @@ def compile_execution_bundle(
                 "end_effector",
                 step.step_id,
                 relation="above",
-                distance_m=0.125,
+                distance_m=profile["post_grasp_lift_m"],
                 planning_method="linear",
             )
             add("move", "home", step.step_id)
@@ -112,7 +121,7 @@ def compile_execution_bundle(
                     "end_effector",
                     step.step_id,
                     relation="behind",
-                    distance_m=0.23,
+                    distance_m=profile["post_release_retreat_m"],
                     planning_method="linear",
                 )
                 add("move", "home", step.step_id)

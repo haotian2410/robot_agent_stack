@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Deterministic UR5e MuJoCo skill execution runtime"
 requires-python = ">=3.11,<3.13"
 dependencies = [
+  "robot-agent-protocol>=0.1,<0.2",
   "mujoco>=3.3,<4",
   "numpy>=2,<3",
   "pydantic>=2,<3",
@@ -23,13 +24,6 @@ robot-agent-control-demo = "robot_agent_control.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/robot_agent_control",
-  "collision",
-  "control",
-  "demo",
-  "kinematics",
-  "libraries",
-  "skills",
-  "utils",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
@@ -40,4 +34,3 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-

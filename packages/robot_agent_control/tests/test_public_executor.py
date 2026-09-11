@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from robot_agent_control import CommandDocument, ControlExecutor, load_command_document
 from robot_agent_control.contracts import scene_sha256
-from robot_agent_control.executor import ExecutionPreflightError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,9 +36,10 @@ def test_scene_fingerprint_is_checked_before_model_load():
     document = load_command_document(COMMANDS).model_copy(
         update={"scene_fingerprint": "0" * 64}
     )
-    with pytest.raises(ExecutionPreflightError, match="fingerprint mismatch") as captured:
-        ControlExecutor().execute(document, viewer_mode="headless")
-    assert captured.value.code == "SCENE_FINGERPRINT_MISMATCH"
+    report = ControlExecutor().execute(document, viewer_mode="headless")
+    assert not report.success
+    assert report.failure.error_code == "SCENE_FINGERPRINT_MISMATCH"
+    assert "fingerprint mismatch" in report.failure.error_message
 
 
 def test_headless_executor_writes_report_and_trace(tmp_path):
@@ -73,6 +73,7 @@ def test_registry_source_names_are_checked_before_execution(tmp_path):
     registry_path = tmp_path / "interactions.json"
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
     document = document.model_copy(update={"registry": str(registry_path)})
-    with pytest.raises(ExecutionPreflightError, match="body_that_does_not_exist") as captured:
-        ControlExecutor().execute(document, viewer_mode="headless")
-    assert captured.value.code == "REGISTRY_INVALID"
+    report = ControlExecutor().execute(document, viewer_mode="headless")
+    assert not report.success
+    assert report.failure.error_code == "REGISTRY_INVALID"
+    assert "body_that_does_not_exist" in report.failure.error_message
