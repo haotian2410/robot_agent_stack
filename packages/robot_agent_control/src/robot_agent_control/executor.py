@@ -54,6 +54,7 @@ class ControlExecutor:
             registry, session = self._preflight(document, headless=mode == ViewerMode.HEADLESS)
         except Exception as exc:
             code = getattr(exc, "code", "INTERNAL_ERROR")
+            first = document.commands[0] if document.commands else None
             report = ExecutionReport(
                 success=False,
                 robot=document.robot,
@@ -64,7 +65,14 @@ class ControlExecutor:
                 commands_started=0,
                 commands_completed=0,
                 steps=[],
-                failure=ExecutionFailure(error_code=str(code), error_message=str(exc), recoverable=False),
+                failure=ExecutionFailure(
+                    command_id=first.command_id if first else None,
+                    source_skill_step_id=first.source_skill_step_id if first else None,
+                    runtime_step_id=None,
+                    skill_name=first.skill_name if first else None,
+                    target=str(first.parameters.get("target", "")) if first else None,
+                    error_code=str(code), error_message=str(exc), recoverable=False,
+                ),
             )
             if output_dir:
                 output = Path(output_dir).resolve()
@@ -277,7 +285,16 @@ class ControlExecutor:
                 runtime_index += 1
                 runtime_step_id = f"runtime-step-{runtime_index:03d}"
                 before = datetime.now(UTC)
-                result = session.execute_step(step, document.request_defaults)
+                try:
+                    result = session.execute_step(step, document.request_defaults)
+                except (ValueError, TimeoutError, RuntimeError, OSError) as exc:
+                    after = datetime.now(UTC)
+                    duration = (after - before).total_seconds()
+                    state["failure"] = self._failure(
+                        command, runtime_step_id, self._error_code(exc), str(exc), False
+                    )
+                    self._trace(trace_path, command, runtime_step_id, False, duration, {"error": {"error_code": state["failure"].error_code, "error_message": str(exc)}}, before, after)
+                    return
                 after = datetime.now(UTC)
                 duration = (after - before).total_seconds()
                 success = bool(result.get("success"))
@@ -333,6 +350,19 @@ class ControlExecutor:
             error_message=message,
             recoverable=recoverable,
         )
+
+    @staticmethod
+    def _error_code(exc: Exception) -> str:
+        text = str(exc).lower()
+        if isinstance(exc, TimeoutError) or "timeout" in text:
+            return "RUNTIME_TIMEOUT"
+        if "ik" in text:
+            return "IK_FAILURE"
+        if "collision" in text:
+            return "COLLISION_FAILURE"
+        if "gripper" in text:
+            return "GRIPPER_FAILURE"
+        return "RUNTIME_ERROR"
 
     @staticmethod
     def _configure_camera(viewer: Any, runtime: Any) -> None:
