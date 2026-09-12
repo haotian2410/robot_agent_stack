@@ -223,13 +223,16 @@ semantic grounding
 | Skill | Planner | Control | 含义 |
 |---|---:|---:|---|
 | `locate` | ✅ | no-op | 定位/引用已知目标 |
-| `search` | ✅ | ❌ | 搜索目标；当前必须在 execution 前完成 perception |
 | `move` | ✅ | ✅ | 移动末端到目标/语义区域 |
 | `grasp` | ✅ | ✅ | 抓取目标 |
 | `release` | ✅ | ✅ | 释放目标 |
 | `press` | ✅ | ✅ | 按压目标 |
 | `pull` | ✅ | ✅ | 拉动已定义的机构 |
 | `push` | ✅ | ✅ | 推动已定义的机构 |
+
+| Skill    | Planner | Execution owner       | Status                    |
+| -------- | ------: | --------------------- | ------------------------- |
+| `search` |       ✅ | Sim / perception loop | ⚠️ active search loop 待实现 |
 
 `open` 和 `close` 是 task-level operation，不是新的底层 atomic skill。Recipe planner 会展开为：
 
