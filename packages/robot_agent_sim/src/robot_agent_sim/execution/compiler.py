@@ -65,7 +65,7 @@ def compile_execution_bundle(
         if not target:
             raise ValueError(f"skill {step.step_id} has no grounded target")
         if target not in objects and target != "home":
-            raise ValueError(f"TARGET_NOT_FOUND: {target}")
+            raise ValueError(f"{ErrorCode.TARGET_NOT_FOUND}: {target}")
 
         if step.skill_name == "locate":
             add("locate", target, step.step_id)
@@ -86,7 +86,7 @@ def compile_execution_bundle(
                 parameters["reference"] = step.reference_object
             add(step.skill_name, target, step.step_id, **parameters)
         else:
-            raise ValueError(f"SKILL_UNSUPPORTED: {step.skill_name}")
+            raise ValueError(f"{ErrorCode.UNSUPPORTED_SKILL}: {step.skill_name}")
 
         # Execution micro-steps are deterministic profile macros. Numeric
         # distances never come from the planner or model.

@@ -245,28 +245,6 @@ class ControlExecutor:
                 "registry references missing MuJoCo names: " + ", ".join(missing),
             )
 
-    @staticmethod
-    def _validate_robot(model: mujoco.MjModel, end_effector_site: str) -> None:
-        required_joints = (
-            "shoulder_pan_joint",
-            "shoulder_lift_joint",
-            "elbow_joint",
-            "wrist_1_joint",
-            "wrist_2_joint",
-            "wrist_3_joint",
-        )
-        missing = [
-            name
-            for name in required_joints
-            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) < 0
-        ]
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, end_effector_site) < 0:
-            missing.append(end_effector_site)
-        if missing:
-            raise ExecutionPreflightError(
-                "ROBOT_MODEL_INCOMPATIBLE", f"missing UR5e model names: {missing}"
-            )
-
     def _run(
         self,
         document: CommandDocument,
@@ -335,7 +313,7 @@ class ControlExecutor:
                     state["failure"] = self._failure(
                         command,
                         runtime_step_id,
-                        str(error.get("error_code", "INTERNAL_ERROR")),
+                        str(error.get("error_code", ErrorCode.INTERNAL_ERROR)),
                         str(error.get("error_message", "control step failed")),
                         bool(error.get("recoverable", False)),
                     )
@@ -348,7 +326,7 @@ class ControlExecutor:
                         time.sleep(1.0 / session.runtime.playback_fps)
                     if not viewer.is_running():
                         state["failure"] = self._failure(
-                            command, runtime_step_id, "EXECUTION_CANCELLED_BY_USER", "viewer closed by user"
+                            command, runtime_step_id, ErrorCode.EXECUTION_CANCELLED_BY_USER, "viewer closed by user"
                         )
                         return
             state["completed"] += 1
