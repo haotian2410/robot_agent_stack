@@ -111,7 +111,7 @@ def test_unsupported_skill_has_structured_trace_context():
         document.model_copy(update={"commands": [command]}), viewer_mode="headless"
     )
     assert not report.success
-    assert report.failure.error_code == "SKILL_UNSUPPORTED"
+    assert report.failure.error_code == "UNSUPPORTED_SKILL"
     assert report.failure.command_id == "bad-command"
     assert report.failure.source_skill_step_id == "bad-step"
     assert report.failure.skill_name == "teleport"

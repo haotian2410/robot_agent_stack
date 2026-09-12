@@ -19,3 +19,12 @@ def test_execution_profile_override_and_invalid_frame(tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOT_AGENT_CONFIG_ROOT", str(root.parent))
     with pytest.raises(ValueError, match="must be one"):
         load_execution_profile()
+
+
+def test_execution_profile_missing_required_field(tmp_path, monkeypatch):
+    root = tmp_path / "configs" / "execution_profiles"
+    root.mkdir(parents=True)
+    root.joinpath("default.json").write_text(json.dumps({"post_grasp_lift_m": 0.1}), encoding="utf-8")
+    monkeypatch.setenv("ROBOT_AGENT_CONFIG_ROOT", str(root.parent))
+    with pytest.raises(ValueError, match="missing required"):
+        load_execution_profile()

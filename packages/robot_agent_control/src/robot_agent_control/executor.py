@@ -15,6 +15,7 @@ from robot_agent_control.command.registry import SceneRegistry
 from robot_agent_control.command.converter import CommandConversionError, SkillCommandConverter
 from robot_agent_control.command.runtime import SkillRuntime
 from robot_agent_control.robot_profile import RobotProfile
+from robot_agent_protocol import ErrorCode
 
 from .contracts import (
     CommandDocument,
@@ -98,7 +99,7 @@ class ControlExecutor:
                 self._run(document, registry, session, converter, reports, state, None, mode, trace_path)
             except Exception as exc:
                 state["failure"] = ExecutionFailure(
-                    error_code="INTERNAL_ERROR", error_message=str(exc), recoverable=False
+                    error_code=ErrorCode.INTERNAL_ERROR, error_message=str(exc), recoverable=False
                 )
         else:
             import mujoco.viewer
@@ -122,7 +123,7 @@ class ControlExecutor:
                     )
                 except Exception as exc:
                     state["failure"] = ExecutionFailure(
-                        error_code="INTERNAL_ERROR", error_message=str(exc), recoverable=False
+                        error_code=ErrorCode.INTERNAL_ERROR, error_message=str(exc), recoverable=False
                     )
                 while viewer.is_running():
                     viewer.sync()
@@ -192,11 +193,11 @@ class ControlExecutor:
             except CommandConversionError as exc:
                 message = str(exc)
                 if "unsupported skill" in message:
-                    code = "SKILL_UNSUPPORTED"
+                    code = ErrorCode.UNSUPPORTED_SKILL
                 elif "action_requests" in message or "anchor" in message:
-                    code = "EXECUTION_METADATA_MISSING"
+                    code = ErrorCode.EXECUTION_METADATA_MISSING
                 else:
-                    code = "COMMAND_INVALID"
+                    code = ErrorCode.INVALID_REQUEST
                 raise ExecutionPreflightError(code, message) from exc
         runtime = document.runtime.model_dump()
         runtime["realtime"] = not headless
@@ -367,14 +368,14 @@ class ControlExecutor:
     def _error_code(exc: Exception) -> str:
         text = str(exc).lower()
         if isinstance(exc, TimeoutError) or "timeout" in text:
-            return "RUNTIME_TIMEOUT"
+            return ErrorCode.RUNTIME_TIMEOUT
         if "ik" in text:
-            return "IK_FAILURE"
+            return ErrorCode.EXECUTION_FAILED
         if "collision" in text:
-            return "COLLISION_FAILURE"
+            return ErrorCode.EXECUTION_FAILED
         if "gripper" in text:
-            return "GRIPPER_FAILURE"
-        return "RUNTIME_ERROR"
+            return ErrorCode.EXECUTION_FAILED
+        return ErrorCode.INTERNAL_ERROR
 
     @staticmethod
     def _configure_camera(viewer: Any, runtime: Any) -> None:

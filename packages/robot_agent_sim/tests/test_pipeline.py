@@ -4,6 +4,13 @@ from robot_agent_sim.grounding.iou import iou,match_detections
 from robot_agent_sim.models.vision_grounding import VisionDetection
 def test_pick_and_place_route_a():
     r=PipelineEngine().plan("把左边的红色方块放进右边蓝色盒子",seed=7); assert r.status=="accepted" and r.model_call_count==1; assert r.planner == "recipe"; assert [x["skill_name"] for x in r.skill_plan["steps"]]==["locate","move","grasp","locate","move","release"]
+
+def test_generated_generic_grasp_has_provenance(tmp_path):
+    import json
+    result = PipelineEngine().plan("抓取红色方块", seed=7, output_dir=tmp_path)
+    registry = json.loads((tmp_path / "interaction_registry.json").read_text())
+    assert registry["objects"]["red_cube_01"]["interaction_metadata"]["grasp_source"] == "generic_default"
+    assert all("interaction_metadata" not in item for item in registry["objects"].values() if item.get("model_name") in {"open_box", "button_basic"})
 def test_seed_is_reproducible():
     assert PipelineEngine().plan("抓取红方块",seed=4).scene_registry==PipelineEngine().plan("抓取红方块",seed=4).scene_registry
 def test_unsupported_direction(): assert PipelineEngine().plan("把东北角红方块抓起来").status==TaskStatus.DIRECTION_CLARIFICATION_REQUIRED
