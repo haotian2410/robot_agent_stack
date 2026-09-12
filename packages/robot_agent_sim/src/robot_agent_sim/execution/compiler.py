@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +11,7 @@ from robot_agent_protocol import CommandDocument, ExecutionBundle, ExecutionOpti
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
 from .interaction_registry_builder import build_authored_registry
+from .execution_profile import load_execution_profile
 
 
 REGION_TO_ANCHOR = {
@@ -19,29 +19,6 @@ REGION_TO_ANCHOR = {
     "container_interior": "interior",
     "button_surface": "button_surface",
 }
-
-
-def _execution_profile() -> dict[str, Any]:
-    """Load deterministic motion macros from the monorepo profile."""
-    root = Path(os.environ.get("ROBOT_AGENT_STACK_ROOT", Path(__file__).resolve().parents[5]))
-    path = root / "configs" / "execution_profiles" / "default.yaml"
-    if not path.is_file():
-        raise ValueError(f"EXECUTION_PROFILE_INVALID: profile not found: {path}")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        distances = ("post_grasp_lift_m", "post_release_retreat_m")
-        frames = ("lift_frame", "retreat_frame")
-        for key in distances:
-            value[key] = float(value[key])
-        for key in frames:
-            if value[key] not in {"world", "object_local", "tool"}:
-                raise ValueError(f"invalid {key}: {value[key]}")
-        for key in ("lift_relation", "retreat_relation"):
-            if not isinstance(value[key], str) or not value[key]:
-                raise ValueError(f"invalid {key}: {value[key]}")
-        return value
-    except (KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"EXECUTION_PROFILE_INVALID: {exc}") from exc
 
 
 def compile_execution_bundle(
@@ -68,7 +45,7 @@ def compile_execution_bundle(
     operations = {item.operation_id: item for item in grounded_task.operations}
 
     commands: list[SkillCommand] = []
-    profile = _execution_profile()
+    profile = load_execution_profile()
 
     def add(skill: str, target: str, source_step: str, **parameters: Any) -> None:
         commands.append(
@@ -118,9 +95,9 @@ def compile_execution_bundle(
                 "move",
                 "end_effector",
                 step.step_id,
-                relation=profile["lift_relation"],
-                distance_m=profile["post_grasp_lift_m"],
-                frame=profile["lift_frame"],
+                relation=profile.lift_relation,
+                distance_m=profile.post_grasp_lift_m,
+                frame=profile.lift_frame,
                 planning_method="linear",
             )
             add("move", "home", step.step_id)
@@ -130,9 +107,9 @@ def compile_execution_bundle(
                     "move",
                     "end_effector",
                     step.step_id,
-                    relation=profile["retreat_relation"],
-                    distance_m=profile["post_release_retreat_m"],
-                    frame=profile["retreat_frame"],
+                    relation=profile.retreat_relation,
+                    distance_m=profile.post_release_retreat_m,
+                    frame=profile.retreat_frame,
                     planning_method="linear",
                 )
                 add("move", "home", step.step_id)
@@ -141,7 +118,7 @@ def compile_execution_bundle(
 
     fingerprint = scene_sha256(scene)
     command_document = CommandDocument(
-        robot="ur5e",
+        robot=robot,
         scene=str(scene),
         registry=str(registry_output),
         scene_fingerprint=fingerprint,
@@ -152,7 +129,7 @@ def compile_execution_bundle(
     commands_path = output / "commands.json"
     commands_path.write_text(command_document.model_dump_json(indent=2), encoding="utf-8")
     bundle = ExecutionBundle(
-        robot="ur5e",
+        robot=robot,
         route=route,
         task_dir=str(output),
         scene=str(scene),

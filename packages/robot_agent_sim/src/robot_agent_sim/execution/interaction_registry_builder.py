@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from copy import deepcopy
 from pathlib import Path
 
 import mujoco
 
 from ..scene.registry import SceneRegistry
+from robot_agent_protocol import scene_sha256
 
 
 DIRECTIONS = {
@@ -38,14 +38,6 @@ TOOL_ORIENTATION = {
     "pitch": 0.0,
     "yaw": 0.0,
 }
-
-
-def _scene_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def build_generated_registry(
@@ -164,6 +156,10 @@ def build_generated_registry(
             }
         else:
             common["interactable"] = True
+            common["interaction_metadata"] = {
+                "grasp_source": "generic_default",
+                "grasp_confidence": None,
+            }
             common["spatial"].update({
                 "default_anchor": "grasp",
                 "anchors": {
@@ -228,7 +224,7 @@ def build_generated_registry(
         "registry_version": 1,
         "coordinate_frame": "mujoco_world",
         "scene": str(scene),
-        "scene_fingerprint": _scene_sha256(scene),
+        "scene_fingerprint": scene_sha256(scene),
         "move_defaults": {
             "planning": {
                 "mode": "auto",
@@ -254,10 +250,6 @@ def build_generated_registry(
                 "request": {
                     "target": {
                         "type": "joint",
-                        "joint_positions": [
-                            0.0, -2.094395, 1.570796,
-                            -1.5707963, -1.5707963, 0.0,
-                        ],
                     }
                 },
             }
@@ -275,8 +267,6 @@ def build_authored_registry(
     output_path: str | Path,
 ) -> Path:
     """Bind authored mechanism metadata to the exact scene it was made for."""
-    from robot_agent_control.contracts import scene_sha256
-
     scene = Path(scene_path).expanduser().resolve()
     authored = Path(authored_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()

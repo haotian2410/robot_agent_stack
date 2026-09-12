@@ -176,10 +176,12 @@ class ControlExecutor:
         # keeps an incompatible robot from initializing controllers or viewer
         # state as a side effect of validation.
         preflight_model = mujoco.MjModel.from_xml_path(str(scene))
-        profile_path = Path(__file__).resolve().parents[4] / "configs" / "robots" / f"{document.robot}.yaml"
         try:
-            profile = RobotProfile.load(profile_path)
+            profile = RobotProfile.load_for_robot(document.robot)
             profile.validate_model(preflight_model, document.runtime.end_effector_site)
+            registry.data.setdefault("named_targets", {}).setdefault("home", {
+                "aliases": ["home", "初始位"], "request": {"target": {"type": "joint"}}
+            })["request"]["target"]["joint_positions"] = profile.home_joint_positions(preflight_model)
         except Exception as exc:
             raise ExecutionPreflightError("ROBOT_MODEL_INCOMPATIBLE", str(exc)) from exc
         self._validate_registry_sources(preflight_model, registry)

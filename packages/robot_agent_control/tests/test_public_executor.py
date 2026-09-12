@@ -91,11 +91,10 @@ def test_missing_actuator_is_robot_model_incompatible(monkeypatch):
     from dataclasses import replace
     from robot_agent_control.robot_profile import RobotProfile
 
-    original = RobotProfile.load
+    original = RobotProfile.load_for_robot
     monkeypatch.setattr(
-        RobotProfile,
-        "load",
-        classmethod(lambda cls, path: replace(original(path), actuator_names=("missing_actuator",))),
+        RobotProfile, "load_for_robot",
+        classmethod(lambda cls, robot: replace(original(robot), actuator_names=("missing_actuator",))),
     )
     report = ControlExecutor().execute(load_command_document(COMMANDS), viewer_mode="headless")
     assert not report.success

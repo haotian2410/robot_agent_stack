@@ -12,6 +12,26 @@ packages/robot_agent_control   # ControlExecutor、IK、夹爪、MuJoCo runtime
 仍然保持独立 import 名称，跨包的 Command/Execution/Interaction schema 由
 `robot_agent_protocol` 唯一维护。
 
+## 能力边界
+
+| Capability | Panda | UR5e |
+|---|---:|---:|
+| Route A/B planning、SkillPlan | ✅ | ✅ |
+| Compile execution commands | ❌ | ✅ |
+| MuJoCo control execution | ❌ | ✅ |
+
+| Execution feature | Status |
+|---|---|
+| generic grasp（MVP，标记 `generic_default`） | ✅ |
+| authored cabinet/door metadata | ✅ |
+| arbitrary grasp pose / 自动推断任意机构 | ❌ |
+| headless / interactive viewer | ✅ |
+| real robot hardware | ❌ |
+
+Route A 使用系统生成场景和确定性对象身份；Route B 使用已有 XML，优先读取 authored
+interaction sidecar，否则走 RGB/segmentation/semantic grounding。任意 XML 不会自动
+获得柜门、抽屉等机构的操作元数据。
+
 ## 安装
 
 ```bash
