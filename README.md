@@ -395,6 +395,101 @@ auto   → recipe 支持时优先 recipe，否则使用 Qwen planner
 
 ---
 
+## 本地 Qwen / VLM 服务
+
+`robot-agent` 不会自动启动模型服务。需要使用真实 VLM 时，先在另一个终端启动
+`llama-server`。本机已有启动脚本位于旧工具目录：
+
+```bash
+conda activate robot_agent_integ
+cd /home/cscvlab/lht/robot_agent
+./scripts/start_qwen38_vlm.sh
+```
+
+脚本默认监听 `http://127.0.0.1:8080/v1`，并提供 OpenAI-compatible
+`/chat/completions` 接口。它要求已经编译好的 `$LLAMA_CPP_DIR/build/bin/llama-server`，
+并检查模型、视觉 projector 和 `--mmproj` 支持。
+
+### Qwen 启动参数（环境变量）
+
+启动脚本没有位置参数，全部通过环境变量配置；未设置时使用脚本默认值。
+
+| 环境变量 | 默认值 | 作用 |
+|---|---|---|
+| `LLAMA_CPP_DIR` | `$HOME/llama.cpp` | llama.cpp 源码/build 根目录；服务程序为 `build/bin/llama-server`。 |
+| `QWEN38_MODEL_DIR` | `$HOME/models/qwen3.8-27b` | 本地 GGUF 和 projector 所在目录。 |
+| `QWEN38_QUANT` | `UD-Q4_K_M` | 自动搜索模型文件时使用的量化后缀。 |
+| `QWEN38_MODEL_REPO` | `unsloth/Qwen3.8-27B-GGUF` | `QWEN38_USE_HF=1` 或下载脚本使用的 Hugging Face 仓库。 |
+| `QWEN38_MODEL_PATH` | 自动搜索唯一 `*<quant>*.gguf` | 明确指定模型 GGUF；目录中有多个候选时必须设置。 |
+| `QWEN38_MMPROJ_PATH` | `$QWEN38_MODEL_DIR/mmproj-BF16.gguf` | Qwen-VL 的视觉 projector 文件。 |
+| `QWEN38_PORT` | `8080` | HTTP 端口；CLI 的 URL 必须使用同一端口。 |
+| `QWEN38_CTX_SIZE` | `16384` | llama-server 上下文长度。显存不足时可调小。 |
+| `QWEN38_IMAGE_MIN_TOKENS` | `1024` | 图像输入的最小视觉 token 数。 |
+| `QWEN38_USE_HF` | `0` | 设为 `1` 时不使用本地模型路径，改用 `-hf <repo>:<quant>` 下载/加载。 |
+
+例如本机模型不在脚本默认目录时：
+
+```bash
+LLAMA_CPP_DIR=/home/cscvlab/llama.cpp \
+QWEN38_MODEL_PATH=/home/cscvlab/models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf \
+QWEN38_MMPROJ_PATH=/home/cscvlab/models/qwen3.8-27b/mmproj-BF16.gguf \
+QWEN38_PORT=8080 \
+/home/cscvlab/robot_agent/scripts/start_qwen38_vlm.sh
+```
+
+若尚未下载模型，可使用同目录的 `download_qwen38_vlm.sh`。它的可选变量为
+`QWEN38_MODEL_DIR`、`QWEN38_MODEL_REPO`、`QWEN38_QUANT` 和
+`QWEN38_MMPROJ_NAME`；下载前需要 `python -m pip install -U huggingface_hub`，
+并登录/配置 Hugging Face 访问权限（如果仓库要求权限）。
+
+### VLM 调用参数
+
+以下参数只对 `plan` 和 `run` 有效；`compile`、`execute` 是确定性阶段，不会连接 Qwen。
+
+| 参数/变量 | 可选值或格式 | 默认值 | 说明 |
+|---|---|---|---|
+| `--provider` | `fake` / `qwen` | `fake` | `fake` 为离线确定性 provider；`qwen` 将 understanding、vision、planner 接到本地 OpenAI-compatible 服务。 |
+| `--planner` | `recipe` / `qwen` / `auto` | `recipe` | `recipe` 不调用 LLM；`qwen` 使用 Qwen 生成 SkillPlan；`auto` 先尝试 recipe，不支持时再回退 Qwen。 |
+| `--structured-output` | `json_schema` / `json_object` / `off` | `json_schema` | Qwen 响应约束：严格 JSON Schema、普通 JSON object，或关闭额外约束。只影响 Qwen。 |
+| `--qwen-base-url` | URL，例如 `http://127.0.0.1:8080/v1` | 未指定 | Qwen API 根地址；未传时读取 `QWEN_BASE_URL`。 |
+| `--qwen-model` | 服务端注册的模型名 | 未指定 | 未传时读取 `QWEN_MODEL`。使用 `--provider qwen` 时必须可解析。 |
+| `QWEN_API_KEY` | 任意字符串或空 | 空 | 从环境变量读取并放入 HTTP Bearer header；本地无鉴权服务通常保持为空。 |
+
+最小 Qwen 调用示例：
+
+```bash
+export QWEN_BASE_URL=http://127.0.0.1:8080/v1
+export QWEN_MODEL=Qwen3.8-27B
+export QWEN_API_KEY=""                 # 本地服务无鉴权时为空
+
+robot-agent run "把红色方块放进蓝色盒子" \
+  --robot ur5e \
+  --provider qwen \
+  --planner qwen \
+  --structured-output json_schema \
+  --output-dir var/qwen-route-a \
+  --viewer-mode headless
+```
+
+Route B 的 VLM grounding 示例：
+
+```bash
+robot-agent run "打开柜门，把红球放到柜子上层，然后关闭柜门" \
+  --robot ur5e \
+  --scene packages/robot_agent_control/world_model/robotsim/scene_001.xml \
+  --interaction-registry packages/robot_agent_control/demo/common/scenes/scene_001.interactions.json \
+  --provider qwen \
+  --planner qwen \
+  --qwen-base-url http://127.0.0.1:8080/v1 \
+  --qwen-model Qwen3.8-27B \
+  --structured-output json_schema \
+  --output-dir var/qwen-route-b \
+  --viewer-mode headless
+```
+
+调用边界是：Route A 通常进行任务理解和技能规划，Route B 还会增加一次视觉 grounding；
+模型只返回语义或二维 bbox，不直接返回 MuJoCo `object_id`、XYZ、关节角或轨迹。
+
 ## 9. 统一 CLI
 
 安装 `robot_agent_sim` 后提供：
