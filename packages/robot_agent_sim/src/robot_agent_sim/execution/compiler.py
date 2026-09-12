@@ -21,18 +21,27 @@ REGION_TO_ANCHOR = {
 }
 
 
-def _execution_profile() -> dict[str, float]:
+def _execution_profile() -> dict[str, Any]:
     """Load deterministic motion macros from the monorepo profile."""
     root = Path(os.environ.get("ROBOT_AGENT_STACK_ROOT", Path(__file__).resolve().parents[5]))
     path = root / "configs" / "execution_profiles" / "default.yaml"
-    if path.is_file():
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(value, dict):
-                return {str(key): float(val) for key, val in value.items()}
-        except (OSError, ValueError, TypeError):
-            pass
-    return {"post_grasp_lift_m": 0.125, "post_release_retreat_m": 0.23}
+    if not path.is_file():
+        raise ValueError(f"EXECUTION_PROFILE_INVALID: profile not found: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        distances = ("post_grasp_lift_m", "post_release_retreat_m")
+        frames = ("lift_frame", "retreat_frame")
+        for key in distances:
+            value[key] = float(value[key])
+        for key in frames:
+            if value[key] not in {"world", "object_local", "tool"}:
+                raise ValueError(f"invalid {key}: {value[key]}")
+        for key in ("lift_relation", "retreat_relation"):
+            if not isinstance(value[key], str) or not value[key]:
+                raise ValueError(f"invalid {key}: {value[key]}")
+        return value
+    except (KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"EXECUTION_PROFILE_INVALID: {exc}") from exc
 
 
 def compile_execution_bundle(
@@ -109,8 +118,9 @@ def compile_execution_bundle(
                 "move",
                 "end_effector",
                 step.step_id,
-                relation="above",
+                relation=profile["lift_relation"],
                 distance_m=profile["post_grasp_lift_m"],
+                frame=profile["lift_frame"],
                 planning_method="linear",
             )
             add("move", "home", step.step_id)
@@ -120,8 +130,9 @@ def compile_execution_bundle(
                     "move",
                     "end_effector",
                     step.step_id,
-                    relation="behind",
+                    relation=profile["retreat_relation"],
                     distance_m=profile["post_release_retreat_m"],
+                    frame=profile["retreat_frame"],
                     planning_method="linear",
                 )
                 add("move", "home", step.step_id)

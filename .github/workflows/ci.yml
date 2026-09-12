@@ -31,3 +31,8 @@ jobs:
       - name: Run protocol, package, integration and e2e tests
         run: |
           pytest -q packages/robot_agent_protocol/tests packages/robot_agent_control/tests packages/robot_agent_sim/tests tests/integration tests/e2e
+      - name: Verify installed CLIs outside the checkout
+        working-directory: /tmp
+        run: |
+          robot-agent --help
+          robot-agent-control --help

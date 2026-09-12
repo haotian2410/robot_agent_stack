@@ -77,3 +77,42 @@ def test_registry_source_names_are_checked_before_execution(tmp_path):
     assert not report.success
     assert report.failure.error_code == "REGISTRY_INVALID"
     assert "body_that_does_not_exist" in report.failure.error_message
+
+
+def test_panda_execution_is_rejected_structurally():
+    document = load_command_document(COMMANDS).model_copy(update={"robot": "panda"})
+    report = ControlExecutor().execute(document, viewer_mode="headless")
+    assert not report.success
+    assert report.failure.error_code == "CONTROL_BACKEND_UNSUPPORTED_ROBOT"
+    assert report.failure.command_id == document.commands[0].command_id
+
+
+def test_missing_actuator_is_robot_model_incompatible(monkeypatch):
+    from dataclasses import replace
+    from robot_agent_control.robot_profile import RobotProfile
+
+    original = RobotProfile.load
+    monkeypatch.setattr(
+        RobotProfile,
+        "load",
+        classmethod(lambda cls, path: replace(original(path), actuator_names=("missing_actuator",))),
+    )
+    report = ControlExecutor().execute(load_command_document(COMMANDS), viewer_mode="headless")
+    assert not report.success
+    assert report.failure.error_code == "ROBOT_MODEL_INCOMPATIBLE"
+    assert "missing_actuator" in report.failure.error_message
+
+
+def test_unsupported_skill_has_structured_trace_context():
+    document = load_command_document(COMMANDS)
+    command = document.commands[0].model_copy(
+        update={"command_id": "bad-command", "source_skill_step_id": "bad-step", "skill_name": "teleport"}
+    )
+    report = ControlExecutor().execute(
+        document.model_copy(update={"commands": [command]}), viewer_mode="headless"
+    )
+    assert not report.success
+    assert report.failure.error_code == "SKILL_UNSUPPORTED"
+    assert report.failure.command_id == "bad-command"
+    assert report.failure.source_skill_step_id == "bad-step"
+    assert report.failure.skill_name == "teleport"

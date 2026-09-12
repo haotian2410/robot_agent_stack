@@ -12,7 +12,7 @@ from typing import Any
 import mujoco
 
 from robot_agent_control.command.registry import SceneRegistry
-from robot_agent_control.command.converter import SkillCommandConverter
+from robot_agent_control.command.converter import CommandConversionError, SkillCommandConverter
 from robot_agent_control.command.runtime import SkillRuntime
 from robot_agent_control.robot_profile import RobotProfile
 
@@ -185,7 +185,17 @@ class ControlExecutor:
         self._validate_registry_sources(preflight_model, registry)
         probe = SkillCommandConverter(registry.data)
         for index, command in enumerate(document.commands, 1):
-            probe.convert_command(command.model_dump(), index)
+            try:
+                probe.convert_command(command.model_dump(), index)
+            except CommandConversionError as exc:
+                message = str(exc)
+                if "unsupported skill" in message:
+                    code = "SKILL_UNSUPPORTED"
+                elif "action_requests" in message or "anchor" in message:
+                    code = "EXECUTION_METADATA_MISSING"
+                else:
+                    code = "COMMAND_INVALID"
+                raise ExecutionPreflightError(code, message) from exc
         runtime = document.runtime.model_dump()
         runtime["realtime"] = not headless
         if headless:

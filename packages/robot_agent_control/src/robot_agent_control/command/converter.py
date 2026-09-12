@@ -386,6 +386,16 @@ class SkillCommandConverter:
             raise CommandConversionError(f"move command {index} has unknown relation {relation!r}")
         distance = float(parameters.get("distance_m", 0.0))
         pose = deepcopy(self._last_pose)
+        frame = str(parameters.get("frame", "world"))
+        if frame == "tool":
+            orientation = pose.get("orientation", {})
+            if not isinstance(orientation, Mapping):
+                raise CommandConversionError("tool-frame pose has no orientation")
+            direction = _rotate_by_quaternion(direction, _orientation_quaternion(orientation))
+        elif frame != "world":
+            raise CommandConversionError(
+                f"move command {index} cannot use {frame!r} for an end-effector-relative target"
+            )
         for axis, delta in zip(("x", "y", "z"), direction):
             pose["position"][axis] = float(pose["position"][axis]) + delta * distance
         return pose
@@ -529,6 +539,21 @@ def _normalize_quaternion(quaternion: Sequence[float]) -> tuple[float, float, fl
     if length <= 1e-12:
         raise CommandConversionError("reference_pose quaternion must not be zero")
     return tuple(float(value) / length for value in quaternion)  # type: ignore[return-value]
+
+
+def _orientation_quaternion(orientation: Mapping[str, Any]) -> tuple[float, float, float, float]:
+    if orientation.get("representation", "quaternion") != "rpy":
+        return _normalize_quaternion([orientation.get(key, 0.0) for key in ("w", "x", "y", "z")])
+    roll, pitch, yaw = (math.radians(float(orientation[key])) / 2.0 for key in ("roll", "pitch", "yaw"))
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return _normalize_quaternion((
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ))
 
 
 def _tool_z_axis(orientation: Mapping[str, Any]) -> list[float]:
