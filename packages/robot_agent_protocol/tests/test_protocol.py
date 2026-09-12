@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from robot_agent_protocol import CommandDocument, ExecutionBundle, scene_sha256
+from robot_agent_protocol import CommandDocument, ExecutionBundle, scene_sha256, validate_bundle_consistency
 from robot_agent_protocol.legacy_loader import load_legacy_command_document
 
 
@@ -36,3 +36,20 @@ def test_legacy_loader_is_explicit(tmp_path):
     command = tmp_path / "commands.json"
     command.write_text(json.dumps({"registry": "registry.json", "commands": [{"skill_name": "move", "parameters": {"target": "home"}}]}), encoding="utf-8")
     assert load_legacy_command_document(command).commands[0].command_id == "command-001"
+
+
+def test_bundle_consistency_is_fail_closed(tmp_path):
+    scene = tmp_path / "scene.xml"
+    scene.write_text("<mujoco/>", encoding="utf-8")
+    commands = tmp_path / "commands.json"
+    commands.write_text(json.dumps({
+        "scene": str(scene), "registry": str(tmp_path / "right.json"),
+        "scene_fingerprint": scene_sha256(scene), "commands": [],
+    }), encoding="utf-8")
+    bundle = ExecutionBundle(
+        robot="ur5e", route="A", task_dir=str(tmp_path), scene=str(scene),
+        scene_fingerprint=scene_sha256(scene), interaction_registry=str(tmp_path / "wrong.json"),
+        commands=str(commands),
+    )
+    with pytest.raises(ValueError, match="EXECUTION_BUNDLE_INCONSISTENT"):
+        validate_bundle_consistency(bundle)
