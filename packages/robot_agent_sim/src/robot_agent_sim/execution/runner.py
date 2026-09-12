@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from robot_agent_protocol import ErrorCode, ProcessFailure
 
 
 def main() -> int:
@@ -17,8 +18,8 @@ def main() -> int:
         from .control_adapter import execute_bundle
 
         report = execute_bundle(args.bundle, viewer_mode=args.viewer_mode)
-    except Exception as exc:  # the child must return a readable process error
-        print(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False))
+    except Exception as exc:  # the child must return a stable process envelope
+        print(ProcessFailure(error_code=ErrorCode.INVALID_REQUEST, error_message=str(exc)).model_dump_json())
         return 1
     print(json.dumps({
         "success": report.success,

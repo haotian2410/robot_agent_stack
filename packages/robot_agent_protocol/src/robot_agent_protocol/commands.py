@@ -19,7 +19,7 @@ class ViewerMode(StrEnum):
 
 
 class ExecutionOptions(StrictModel):
-    end_effector_site: str = "robotiq_2f85_pinch"
+    end_effector_site: str | None = None
     execution_mode: Literal["kinematic", "actuator"] = "kinematic"
     playback_fps: float = Field(default=60.0, gt=0)
     playback_speed: float = Field(default=2.0, gt=0)

@@ -179,7 +179,8 @@ class ControlExecutor:
         preflight_model = mujoco.MjModel.from_xml_path(str(scene))
         try:
             profile = RobotProfile.load_for_robot(document.robot)
-            profile.validate_model(preflight_model, document.runtime.end_effector_site)
+            requested_site = document.runtime.end_effector_site or profile.end_effector_site
+            profile.validate_model(preflight_model, requested_site)
             registry.data.setdefault("named_targets", {}).setdefault("home", {
                 "aliases": ["home", "初始位"], "request": {"target": {"type": "joint"}}
             })["request"]["target"]["joint_positions"] = profile.home_joint_positions(preflight_model)
@@ -200,6 +201,7 @@ class ControlExecutor:
                     code = ErrorCode.INVALID_REQUEST
                 raise ExecutionPreflightError(code, message) from exc
         runtime = document.runtime.model_dump()
+        runtime["end_effector_site"] = requested_site
         runtime["realtime"] = not headless
         if headless:
             runtime["minimum_playback_duration"] = 0.0

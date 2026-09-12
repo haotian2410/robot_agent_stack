@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from pydantic import ValidationError
+from robot_agent_protocol import ErrorCode, ProcessFailure
 
 from .contracts import ViewerMode
 from .executor import ControlExecutor, ExecutionPreflightError
@@ -22,8 +24,9 @@ def main() -> None:
         report = ControlExecutor().execute(
             args.commands, viewer_mode=args.viewer_mode, output_dir=args.output_dir
         )
-    except ExecutionPreflightError as exc:
-        print(json.dumps({"success": False, "error_code": exc.code, "error_message": str(exc)}, ensure_ascii=False))
+    except (ExecutionPreflightError, OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        envelope = ProcessFailure(error_code=getattr(exc, "code", ErrorCode.INVALID_REQUEST), error_message=str(exc))
+        print(envelope.model_dump_json(indent=2))
         raise SystemExit(2) from exc
     print(report.model_dump_json(indent=2))
     raise SystemExit(0 if report.success else 1)
@@ -31,4 +34,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

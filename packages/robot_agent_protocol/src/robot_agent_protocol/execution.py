@@ -68,6 +68,13 @@ class ExecutionReport(StrictModel):
     failure: ExecutionFailure | None = None
 
 
+class ProcessFailure(StrictModel):
+    success: Literal[False] = False
+    error_code: str
+    error_message: str
+    report: ExecutionReport | None = None
+
+
 # Compatibility alias for the previous control API.
 RuntimeStepReport = ExecutionStepReport
 
