@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from robot_agent_protocol import CommandDocument, ExecutionBundle, ExecutionOptions, SkillCommand, scene_sha256
+from robot_agent_protocol import CommandDocument, ErrorCode, ExecutionBundle, ExecutionOptions, SkillCommand, scene_sha256
 
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
@@ -61,7 +61,7 @@ def compile_execution_bundle(
         operation = operations[step.operation_id]
         target = step.target_object
         if step.skill_name == "search":
-            raise ValueError("PERCEPTION_REQUIRED: search must finish before execution")
+            raise ValueError(f"{ErrorCode.PERCEPTION_REQUIRED}: search must finish before execution")
         if not target:
             raise ValueError(f"skill {step.step_id} has no grounded target")
         if target not in objects and target != "home":
@@ -74,7 +74,7 @@ def compile_execution_bundle(
             desired = REGION_TO_ANCHOR.get(step.semantic_target or "")
             anchors = spatial.get("anchors", {})
             if desired is not None and desired not in anchors:
-                raise ValueError(f"ANCHOR_NOT_FOUND: {target}.{desired}")
+                raise ValueError(f"{ErrorCode.ANCHOR_NOT_FOUND}: {target}.{desired}")
             anchor = desired if desired is not None else spatial.get("default_anchor")
             parameters = {"planning_method": "auto"}
             if anchor:

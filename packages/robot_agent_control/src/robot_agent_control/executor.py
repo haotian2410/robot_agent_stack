@@ -54,7 +54,7 @@ class ControlExecutor:
         try:
             registry, session = self._preflight(document, headless=mode == ViewerMode.HEADLESS)
         except Exception as exc:
-            code = getattr(exc, "code", "INTERNAL_ERROR")
+            code = getattr(exc, "code", ErrorCode.INTERNAL_ERROR)
             first = document.commands[0] if document.commands else None
             report = ExecutionReport(
                 success=False,
@@ -155,21 +155,21 @@ class ControlExecutor:
     ) -> tuple[SceneRegistry, SkillRuntime]:
         if document.robot != "ur5e":
             raise ExecutionPreflightError(
-                "CONTROL_BACKEND_UNSUPPORTED_ROBOT",
+                ErrorCode.CONTROL_BACKEND_UNSUPPORTED_ROBOT,
                 "control execution currently supports ur5e only",
             )
         scene = Path(document.scene)
         registry_path = Path(document.registry)
         if not scene.is_file():
-            raise ExecutionPreflightError("SCENE_INVALID", f"scene not found: {scene}")
+            raise ExecutionPreflightError(ErrorCode.SCENE_INVALID, f"scene not found: {scene}")
         if not registry_path.is_file():
             raise ExecutionPreflightError(
-                "REGISTRY_INVALID", f"interaction registry not found: {registry_path}"
+                ErrorCode.REGISTRY_INVALID, f"interaction registry not found: {registry_path}"
             )
         actual_hash = scene_sha256(scene)
         if actual_hash != document.scene_fingerprint:
             raise ExecutionPreflightError(
-                "SCENE_FINGERPRINT_MISMATCH",
+                ErrorCode.SCENE_FINGERPRINT_MISMATCH,
                 f"scene fingerprint mismatch: expected {document.scene_fingerprint}, got {actual_hash}",
             )
         registry = SceneRegistry(registry_path, scene_path=scene)
@@ -184,7 +184,7 @@ class ControlExecutor:
                 "aliases": ["home", "初始位"], "request": {"target": {"type": "joint"}}
             })["request"]["target"]["joint_positions"] = profile.home_joint_positions(preflight_model)
         except Exception as exc:
-            raise ExecutionPreflightError("ROBOT_MODEL_INCOMPATIBLE", str(exc)) from exc
+            raise ExecutionPreflightError(ErrorCode.ROBOT_MODEL_INCOMPATIBLE, str(exc)) from exc
         self._validate_registry_sources(preflight_model, registry)
         probe = SkillCommandConverter(registry.data)
         for index, command in enumerate(document.commands, 1):
@@ -239,7 +239,7 @@ class ControlExecutor:
                     missing.append(f"{object_key}:action_request:{acting}.{action}")
         if missing:
             raise ExecutionPreflightError(
-                "REGISTRY_INVALID",
+                ErrorCode.REGISTRY_INVALID,
                 "registry references missing MuJoCo names: " + ", ".join(missing),
             )
 
