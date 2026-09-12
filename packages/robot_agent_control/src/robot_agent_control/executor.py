@@ -21,6 +21,7 @@ from .contracts import (
     CommandDocument,
     ExecutionFailure,
     ExecutionReport,
+    ProcessFailure,
     RuntimeStepReport,
     ViewerMode,
     load_command_document,
@@ -43,14 +44,17 @@ class ControlExecutor:
         *,
         viewer_mode: ViewerMode | str = ViewerMode.AUTO,
         output_dir: str | Path | None = None,
-    ) -> ExecutionReport:
+    ) -> ExecutionReport | ProcessFailure:
         started = datetime.now(UTC)
-        document = (
-            load_command_document(command_document)
-            if isinstance(command_document, (str, Path))
-            else command_document
-        )
-        mode = ViewerMode(viewer_mode)
+        try:
+            document = (
+                load_command_document(command_document)
+                if isinstance(command_document, (str, Path))
+                else CommandDocument.model_validate(command_document)
+            )
+            mode = ViewerMode(viewer_mode)
+        except Exception as exc:
+            return ProcessFailure(error_code=ErrorCode.INVALID_REQUEST, error_message=str(exc))
         try:
             registry, session = self._preflight(document, headless=mode == ViewerMode.HEADLESS)
         except Exception as exc:
@@ -156,7 +160,7 @@ class ControlExecutor:
         if document.robot != "ur5e":
             raise ExecutionPreflightError(
                 ErrorCode.CONTROL_BACKEND_UNSUPPORTED_ROBOT,
-                "control execution currently supports ur5e only",
+                f"{ErrorCode.CONTROL_BACKEND_UNSUPPORTED_ROBOT}: control execution currently supports ur5e only",
             )
         scene = Path(document.scene)
         registry_path = Path(document.registry)

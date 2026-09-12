@@ -18,6 +18,9 @@ def main() -> int:
         from .control_adapter import execute_bundle
 
         report = execute_bundle(args.bundle, viewer_mode=args.viewer_mode)
+        if not hasattr(report, "commands_completed"):
+            print(report.model_dump_json())
+            return 1
     except Exception as exc:  # the child must return a stable process envelope
         print(ProcessFailure(error_code=ErrorCode.INVALID_REQUEST, error_message=str(exc)).model_dump_json())
         return 1

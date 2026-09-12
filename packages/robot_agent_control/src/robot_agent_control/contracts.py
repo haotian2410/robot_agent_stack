@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from robot_agent_protocol import (CommandDocument, ExecutionFailure, ExecutionOptions,
-    ExecutionReport, RuntimeStepReport, SkillCommand, ViewerMode, scene_sha256)
+    ExecutionReport, ProcessFailure, RuntimeStepReport, SkillCommand, ViewerMode, scene_sha256)
 from robot_agent_protocol import load_command_document as load_v1_command_document
 from robot_agent_protocol import load_legacy_command_document
 
@@ -15,5 +15,5 @@ def load_command_document(path: str | Path) -> CommandDocument:
         return load_v1_command_document(command_path)
     return load_legacy_command_document(command_path)
 
-__all__ = ["CommandDocument", "ExecutionFailure", "ExecutionOptions", "ExecutionReport",
+__all__ = ["CommandDocument", "ExecutionFailure", "ExecutionOptions", "ExecutionReport", "ProcessFailure",
     "RuntimeStepReport", "SkillCommand", "ViewerMode", "load_command_document", "scene_sha256"]

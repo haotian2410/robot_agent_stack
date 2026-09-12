@@ -42,6 +42,15 @@ def test_scene_fingerprint_is_checked_before_model_load():
     assert "fingerprint mismatch" in report.failure.error_message
 
 
+def test_malformed_command_file_returns_process_failure(tmp_path):
+    bad = tmp_path / "bad.commands.json"
+    bad.write_text("{not-json", encoding="utf-8")
+    result = ControlExecutor().execute(bad, viewer_mode="headless")
+    assert result.success is False
+    assert result.error_code == "INVALID_REQUEST"
+    assert result.report is None
+
+
 def test_headless_executor_writes_report_and_trace(tmp_path):
     original = load_command_document(COMMANDS)
     home = original.commands[-1].model_copy(

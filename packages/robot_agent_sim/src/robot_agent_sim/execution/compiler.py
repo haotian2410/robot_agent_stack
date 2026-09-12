@@ -33,7 +33,7 @@ def compile_execution_bundle(
 ) -> ExecutionBundle:
 
     if robot != "ur5e":
-        raise ValueError("control execution currently supports ur5e only")
+        raise ValueError(f"{ErrorCode.CONTROL_BACKEND_UNSUPPORTED_ROBOT}: control execution currently supports ur5e only")
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     scene = Path(scene_path).expanduser().resolve()

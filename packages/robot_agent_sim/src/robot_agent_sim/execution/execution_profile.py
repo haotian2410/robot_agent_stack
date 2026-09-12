@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from robot_agent_protocol import ErrorCode
 
 
 @dataclass(frozen=True)
@@ -30,11 +31,11 @@ def load_execution_profile(name: str = "default") -> ExecutionProfile:
     required = ("post_grasp_lift_m", "lift_relation", "lift_frame", "post_release_retreat_m", "retreat_relation", "retreat_frame")
     missing = [key for key in required if key not in raw]
     if missing:
-        raise ValueError(f"EXECUTION_PROFILE_INVALID: missing required fields {missing}")
+        raise ValueError(f"{ErrorCode.EXECUTION_PROFILE_INVALID}: missing required fields {missing}")
     allowed_frames = {"world", "tool"}
     for key in ("lift_frame", "retreat_frame"):
         if raw[key] not in allowed_frames:
-            raise ValueError(f"EXECUTION_PROFILE_INVALID: {key} must be one of {sorted(allowed_frames)}")
+            raise ValueError(f"{ErrorCode.EXECUTION_PROFILE_INVALID}: {key} must be one of {sorted(allowed_frames)}")
     return ExecutionProfile(
         post_grasp_lift_m=float(raw["post_grasp_lift_m"]), lift_relation=str(raw["lift_relation"]), lift_frame=str(raw["lift_frame"]),
         post_release_retreat_m=float(raw["post_release_retreat_m"]), retreat_relation=str(raw["retreat_relation"]), retreat_frame=str(raw["retreat_frame"]),
