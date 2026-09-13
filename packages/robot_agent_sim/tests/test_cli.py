@@ -84,3 +84,24 @@ def test_pipeline_error_is_readable(monkeypatch):
     assert result.exit_code == 1
     assert "规划失败" in result.output
     assert "Traceback" not in result.output
+
+
+def test_run_prints_planning_summary_before_compile_failure(monkeypatch, tmp_path):
+    planned = PipelineResult(
+        task_intent={"task_types": ["pick_and_place"]},
+        grounded_task={"entities": [{"entity_id": "baseball_01", "object_id": "baseball_01", "grounding_method": "asset_scene_binding"}]},
+        skill_plan={"steps": [{"step_id": "step-1", "skill_name": "locate", "target_object": "baseball_01"}]},
+        model_call_count=2,
+        model_usage={"stages": [{"stage": "task_understanding", "prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14, "finish_reason": "stop"}]},
+        planner="qwen", route="B", source_scene="scene.xml",
+    )
+    monkeypatch.setattr(cli, "_plan", lambda *args, **kwargs: planned)
+    monkeypatch.setattr(cli, "compile_directory", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("compile failed")))
+    result = runner.invoke(cli.app, ["run", "抓取棒球", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "语义子任务顺序" in result.output
+    assert "Atomic Skill 调用顺序：locate" in result.output
+    assert "模型调用次数：2" in result.output
+    assert "规划器：qwen / Route B" in result.output
+    assert "模型调用明细" in result.output
+    assert "运行准备失败：compile failed" in result.output

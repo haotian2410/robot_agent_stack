@@ -25,6 +25,14 @@ def test_route_b_scene_001_headless_full_flow(tmp_path):
         robot="ur5e", scene=scene, interaction_registry=registry, output_dir=tmp_path,
     )
     assert result.status == "accepted"
+    assert [item["task_type"] for item in result.grounded_task["operations"]] == ["open", "pick_and_place", "close"]
+    skills_by_operation = {}
+    for step in result.skill_plan["steps"]:
+        skills_by_operation.setdefault(step["operation_id"], []).append(step["skill_name"])
+    assert "pull" in skills_by_operation["op-1"]
+    assert "release" in skills_by_operation["op-2"]
+    assert "push" in skills_by_operation["op-3"]
+    assert result.route == "B"
     bundle = compile_directory(tmp_path)
     report = execute_bundle(bundle, viewer_mode="headless")
     assert report.success

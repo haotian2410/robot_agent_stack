@@ -5,6 +5,7 @@ from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest, enrich_task
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.contracts.task_intent import SpatialRelationType, TaskStatus, TaskType
+from robot_agent_sim.models.prompts import TASK_UNDERSTANDING_PROMPT
 
 
 PARSER = FakeTaskUnderstandingProvider()
@@ -54,6 +55,23 @@ def test_corner_entity_selectors_are_planar(phrase, expected):
     assert SpatialRelationType.DOWN not in relations
 
 
+def test_fake_matches_qwen_corner_contract():
+    contract = {
+        "左上角": {SpatialRelationType.LEFT, SpatialRelationType.FRONT},
+        "右上角": {SpatialRelationType.RIGHT, SpatialRelationType.FRONT},
+        "左下角": {SpatialRelationType.LEFT, SpatialRelationType.BACK},
+        "右下角": {SpatialRelationType.RIGHT, SpatialRelationType.BACK},
+    }
+    for phrase, expected in contract.items():
+        _, intent = parse(f"抓取{phrase}的棒球")
+        actual = {r.relation for r in intent.spatial_relations if r.subject == "baseball_01"}
+        assert actual == expected
+    assert "左上角=left+front" in TASK_UNDERSTANDING_PROMPT
+    assert "右上角=right+front" in TASK_UNDERSTANDING_PROMPT
+    assert "左下角=left+back" in TASK_UNDERSTANDING_PROMPT
+    assert "右下角=right+back" in TASK_UNDERSTANDING_PROMPT
+
+
 @pytest.mark.parametrize(("phrase", "expected"), [("向上", "up"), ("向下", "down")])
 def test_motion_direction_does_not_become_spatial_selector(phrase, expected):
     parsed, intent = parse(f"把棒球{phrase}移动")
@@ -84,6 +102,35 @@ def test_corner_pick_and_place_layout_uses_both_axes(tmp_path):
     assert objects["baseball_01"]["position"][1] > 0
     assert objects["basket_01"]["position"][0] > 0
     assert objects["basket_01"]["position"][1] < 0
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected_xy"),
+    [
+        ("左上角", (-0.22, 0.38)),
+        ("右上角", (0.22, 0.38)),
+        ("左下角", (-0.22, -0.38)),
+        ("右下角", (0.22, -0.38)),
+    ],
+)
+def test_route_a_corner_selector_maps_to_deterministic_layout(tmp_path, phrase, expected_xy):
+    result = PipelineEngine().plan(f"抓取{phrase}的棒球", robot="ur5e", planner="recipe", output_dir=tmp_path)
+    assert result.status == "accepted"
+    baseball = next(item for item in result.scene_registry["objects"] if item["entity_id"] == "baseball_01")
+    assert tuple(baseball["position"][:2]) == expected_xy
+    assert result.grounded_task["entities"][0]["grounding_method"] == "asset_scene_binding"
+
+
+def test_route_a_spatial_pick_and_place_binds_both_quadrants(tmp_path):
+    result = PipelineEngine().plan(
+        "把右上角的棒球放到左下角的篮子里",
+        robot="ur5e", planner="recipe", output_dir=tmp_path,
+    )
+    assert result.status == "accepted"
+    by_entity = {item["entity_id"]: item for item in result.scene_registry["objects"]}
+    assert tuple(by_entity["baseball_01"]["position"][:2]) == (0.22, 0.38)
+    assert tuple(by_entity["basket_01"]["position"][:2]) == (-0.22, -0.38)
+    assert {item["grounding_method"] for item in result.grounded_task["entities"]} == {"asset_scene_binding"}
 
 
 def test_selection_and_motion_direction_can_coexist():

@@ -270,7 +270,7 @@ def _print_summary(result) -> None:
     usage = getattr(result, "model_usage", None) or {}
     stages = usage.get("stages", [])
     if stages:
-        typer.echo("Qwen 调用明细：")
+        typer.echo("模型调用明细：")
         for stage in stages:
             typer.echo(
                 "  {stage}: prompt={prompt} completion={completion} total={total} finish={finish}".format(
