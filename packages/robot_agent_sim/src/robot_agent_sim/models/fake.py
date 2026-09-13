@@ -20,6 +20,8 @@ class FakeTaskUnderstandingProvider:
         # Composite directions are ambiguous only when they modify the
         # motion itself.  “左上角的棒球” is an entity selector and must be
         # parsed as spatial relations instead.
+        if "东北角" in text:
+            return TaskParseLLMOutput(status="direction_clarification_required", raw_direction="东北角")
         if any(token in low for token in diagonals) and any(token in low for token in motion_words):
             raw = next((token for token in diagonals if token in text or token in low), "diagonal")
             return TaskParseLLMOutput(status="direction_clarification_required", raw_direction=raw)
