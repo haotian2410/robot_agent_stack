@@ -3,28 +3,15 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan, SkillStep
+from ..planning.context_builder import PlannerContext
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class PlannerOperation(StrictModel):
-    id: str
-    type: str
-    has_source: bool = False
-    has_destination: bool = False
-    has_target: bool = False
-    has_reference: bool = False
-
-
-class PlannerContext(StrictModel):
-    operations: list[PlannerOperation]
-    goals: list[dict[str, str | None]] = Field(default_factory=list)
 
 
 class LLMPlanStep(StrictModel):
@@ -59,18 +46,7 @@ class SkillPlanningProvider(Protocol):
     def plan(self, request: SkillPlanningRequest) -> SkillPlanLLMOutput: ...
 
 
-def planner_context(task: GroundedTask) -> PlannerContext:
-    operations = [PlannerOperation(
-        id=operation.operation_id, type=operation.task_type.value,
-        has_source=operation.source is not None, has_destination=operation.destination is not None,
-        has_target=operation.target is not None, has_reference=operation.reference is not None,
-    ) for operation in task.operations]
-    goals = [{"relation": relation.relation.value} for relation in task.spatial_relations if relation.scope == "goal"]
-    return PlannerContext(operations=operations, goals=goals)
-
-
 def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPlan:
-    context = planner_context(task)
     grounded = {entity.entity_id: entity.object_id for entity in task.entities}
     operations = {operation.operation_id: operation for operation in task.operations}
     expected_ids = [operation.operation_id for operation in task.operations]

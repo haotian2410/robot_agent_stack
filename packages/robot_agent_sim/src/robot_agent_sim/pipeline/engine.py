@@ -16,11 +16,12 @@ from ..grounding.world_relation import WorldRelationResolver
 from ..execution.interaction_registry_builder import build_generated_registry
 from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded
 from ..models.fake import FakeSkillPlanningProvider, FakeTaskUnderstandingProvider, FakeVisionGroundingProvider
-from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan, planner_context
+from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
 from ..models.task_understanding import TaskUnderstandingRequest, enrich_task
 from ..models.vision_grounding import VisionGroundingRequest, VisionQuery
-from ..planning.recipes import validate_plan
+from ..planning.context_builder import build_planner_context
 from ..planning.recipe_planner import RecipePlanner
+from ..planning.semantic_validator import validate_semantic_plan
 from ..scene.composer import SceneComposer
 from ..skills.registry import REGISTRY
 
@@ -53,6 +54,7 @@ class PipelineEngine:
     def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
+        planner_artifacts: dict[str, str] = {}
         if planner not in {"recipe", "qwen", "auto"}:
             raise ValueError(f"unsupported planner: {planner}")
         budget = ModelCallBudget.for_route(scene is not None, planner)
@@ -136,16 +138,39 @@ class PipelineEngine:
                 planner_used = "recipe"
             else:
                 planner_used = "qwen"
+                context = build_planner_context(
+                    task,
+                    generated_interactions if scene is None else interaction_registry,
+                )
+                catalog = REGISTRY.prompt_catalog()
+                context_path = out / "planner_context.json"
+                catalog_path = out / "planner_skill_catalog.txt"
+                context_path.write_text(
+                    json.dumps(context.model_dump(mode="json"), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                catalog_path.write_text(catalog + "\n", encoding="utf-8")
+                planner_artifacts.update({
+                    "planner_context.json": str(context_path),
+                    "planner_skill_catalog.txt": str(catalog_path),
+                })
                 budget.consume("skill_planning")
                 raw_plan = self.planner.plan(SkillPlanningRequest(
-                    context=planner_context(task),
-                    skill_catalog=REGISTRY.prompt_catalog(),
+                    context=context,
+                    skill_catalog=catalog,
                 ))
                 self._capture(budget, "skill_planning", self.planner)
+                raw_path = out / "raw_skill_plan.json"
+                raw_path.write_text(
+                    json.dumps(raw_plan.model_dump(mode="json"), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                planner_artifacts["raw_skill_plan.json"] = str(raw_path)
                 skill = enrich_skill_plan(raw_plan, task)
-                validate_plan(skill, task)
+                validate_semantic_plan(skill, task, context, REGISTRY)
             result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), grounded_task=task.model_dump(mode="json"), visual_grounding=visual_grounding, skill_plan=skill.model_dump(mode="json"), model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, source_scene=str((xml_path if scene is None else Path(scene)).resolve()), interaction_registry=str(generated_interactions) if scene is None else (str(Path(interaction_registry).resolve()) if interaction_registry else None))
             result.artifacts["asset_bindings.json"] = str(out / "asset_bindings.json")
+            result.artifacts.update(planner_artifacts)
             Path(result.artifacts["asset_bindings.json"]).write_text(json.dumps(asset_bindings, ensure_ascii=False, indent=2), encoding="utf-8")
             self._add_observation_artifacts(result.artifacts, observation)
             if scene is None:
@@ -155,6 +180,7 @@ class PipelineEngine:
         except (OSError, ValueError, KeyError, RuntimeError, ValidationError, ModelCallBudgetExceeded) as exc:
             status = "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded) else ("asset_missing" if "asset_missing" in str(exc) else ("unsupported_recipe" if "unsupported_recipe" in str(exc) else ("grounding_ambiguous" if "grounding_ambiguous" in str(exc) else ("relation_not_satisfied" if "relation_not_satisfied" in str(exc) else "planning_failed"))))
             result = PipelineResult(task_intent=intent.model_dump(mode="json") if intent else {"instruction": instruction}, scene_registry=registry.model_dump(mode="json") if registry else {}, status=status, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=str(exc))
+            result.artifacts.update(planner_artifacts)
             if observation is not None: self._add_observation_artifacts(result.artifacts, observation)
             return self._write_result(result, out)
 

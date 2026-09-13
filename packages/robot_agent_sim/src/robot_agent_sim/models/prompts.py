@@ -22,9 +22,18 @@ bbox=[ymin,xmin,ymax,xmax]，整数范围 0..1000；同一 entity 可以有多�
 只输出 entity 和 bbox；不要输出 detection id、object_id、世界坐标、动作、置信度或解释。"""
 
 
-SKILL_PLANNING_PROMPT = """根据 operations 与 Atomic Skill Catalog 生成技能顺序。
-保持 operation 顺序，只使用注册技能；target/reference 只能使用 operation 角色。
-不要输出 object_id、step id、depends_on、description、XYZ、轨迹或解释。"""
+SKILL_PLANNING_PROMPT = """你是机器人高层技能规划器。
+
+根据 operations 中的高层任务目标、task-relevant entities 的 category/affordances/semantic regions，以及 Atomic Skill Catalog 中每个技能的语义、preconditions 和 effects，自主组合 Atomic Skills 完成每个 operation。
+
+规则：
+- high-level operation 只是目标，不是 Atomic Skill；不要假设任何预定义的高层任务 recipe；
+- 只能使用 Atomic Skill Catalog 中存在的技能，使用前必须满足其 affordance 和 preconditions；
+- 必须保持 operation 顺序及其依赖顺序；
+- target/reference/source/destination 只能引用当前 operation 的角色；
+- 不要重新解释或修改给定 operation type；
+- 不要输出 object_id、step_id、depends_on、XYZ、关节角、轨迹、距离或解释；
+- 输出必须严格满足 SkillPlan LLM schema。"""
 
 
 def prompt_payload(value) -> str:

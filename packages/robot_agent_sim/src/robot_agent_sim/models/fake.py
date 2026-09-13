@@ -171,10 +171,10 @@ class FakeSkillPlanningProvider:
             proxy = Operation(
                 operation_id=operation.id,
                 task_type=TaskType(operation.type),
-                target="target" if operation.has_target else None,
-                source="source" if operation.has_source else None,
-                destination="destination" if operation.has_destination else None,
-                reference="reference" if operation.has_reference else None,
+                target="target" if operation.target else None,
+                source="source" if operation.source else None,
+                destination="destination" if operation.destination else None,
+                reference="reference" if operation.reference else None,
             )
             steps = [LLMPlanStep(skill=skill, target=target, reference=reference, region=region) for skill, target, reference, region in RECIPE_DEFINITIONS[operation.type].build(proxy)]
             plans.append(LLMOperationPlan(id=operation.id, steps=steps))

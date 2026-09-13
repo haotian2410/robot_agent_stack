@@ -118,7 +118,12 @@ class QwenHTTPProvider:
         return VisionLLMOutput.model_validate(json.loads(self._call("vision_grounding", VISION_GROUNDING_PROMPT, content)))
 
     def plan(self, request):
-        content = prompt_payload({"operations": [item.model_dump(mode="json") for item in request.context.operations], "goals": request.context.goals, "skills": request.skill_catalog})
+        content = prompt_payload({
+            "operations": [item.model_dump(mode="json") for item in request.context.operations],
+            "entities": [item.model_dump(mode="json") for item in request.context.entities],
+            "goals": [item.model_dump(mode="json") for item in request.context.goals],
+            "skills": request.skill_catalog,
+        })
         return SkillPlanLLMOutput.model_validate(json.loads(self._call("skill_planning", SKILL_PLANNING_PROMPT, content)))
 
 
