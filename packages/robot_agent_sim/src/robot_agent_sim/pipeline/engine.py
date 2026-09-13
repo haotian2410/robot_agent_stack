@@ -215,7 +215,7 @@ class PipelineEngine:
         result.model_usage.setdefault("planner", result.planner)
         provenance = {
             "task_understanding": "qwen" if getattr(result, "planner", "recipe") == "qwen" and result.model_usage.get("stages") else "fake",
-            "grounding": "interaction_registry" if result.interaction_registry else ("asset_scene_binding" if result.route == "A" else "visual_grounding"),
+            "grounding": "asset_scene_binding" if result.route == "A" else ("interaction_registry" if result.interaction_registry else "visual_grounding"),
             "skill_planner": result.planner,
             "validator": "semantic" if result.planner == "qwen" else "recipe",
             "recipe_used": result.planner == "recipe",
