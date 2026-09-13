@@ -1,11 +1,14 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
 from robot_agent_sim.contracts.skill_plan import SkillPlan, SkillStep
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskType
 from robot_agent_sim.models.prompts import SKILL_PLANNING_PROMPT
+from robot_agent_sim.models.skill_planning import SkillPlanLLMOutput
+from robot_agent_sim.models.qwen_http import QwenHTTPProvider
 from robot_agent_sim.planning.context_builder import build_planner_context
 from robot_agent_sim.planning.recipe_planner import RecipePlanner
 from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
@@ -83,3 +86,40 @@ def test_semantic_validator_rejects_pull_without_contact():
     plan = SkillPlan(task_types=[TaskType.OPEN], steps=[SkillStep(step_id="step-1", operation_id="op-1", skill_name="pull", target_object="blue_cabinet_door", reference_object="blue_cabinet_handle")])
     with pytest.raises(ValueError, match="grasp/contact"):
         validate_semantic_plan(plan, task, context)
+
+
+def test_root_single_operation_is_rejected_and_raw_is_retained(monkeypatch):
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"id":"op-1","steps":[]}'}}], "usage": {"prompt_tokens": 17, "completion_tokens": 9}}
+
+    monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", lambda *args, **kwargs: Response())
+    provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
+    from robot_agent_sim.models.skill_planning import SkillPlanningRequest
+    context = build_planner_context(cabinet_task(), SIDECAR)
+    with pytest.raises(ValidationError):
+        provider.plan(SkillPlanningRequest(context=context, skill_catalog=REGISTRY.prompt_catalog()))
+    assert provider.last_raw_values["skill_planning"] == {"id": "op-1", "steps": []}
+    assert provider.calls[-1]["prompt_tokens"] == 17
+
+
+def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
+    class BrokenPlanner:
+        calls = [{"stage": "skill_planning", "status": "succeeded", "prompt_tokens": 23, "completion_tokens": 11}]
+        last_raw_values = {"skill_planning": {"id": "op-1", "steps": []}}
+
+        def plan(self, request):
+            SkillPlanLLMOutput.model_validate(self.last_raw_values["skill_planning"])
+
+    from robot_agent_sim.pipeline.engine import PipelineEngine
+    result = PipelineEngine(planner=BrokenPlanner()).plan("抓取红方块", planner="qwen", output_dir=tmp_path)
+    assert result.status == "planning_failed"
+    assert (tmp_path / "raw_skill_plan.json").is_file()
+    assert result.model_usage["stages"][-1]["prompt_tokens"] == 23
+    assert result.model_usage["stages"][-1]["completion_tokens"] == 11
+    assert result.model_usage["stages"][-1]["total_tokens"] == 34

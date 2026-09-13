@@ -178,6 +178,16 @@ class PipelineEngine:
                 result.artifacts["interaction_registry.json"] = str(generated_interactions)
             return self._write_result(result, out)
         except (OSError, ValueError, KeyError, RuntimeError, ValidationError, ModelCallBudgetExceeded) as exc:
+            if planner_used == "qwen":
+                # The HTTP call can succeed while schema or semantic
+                # validation fails. Capture usage and the final JSON response
+                # before constructing the failure result.
+                self._capture(budget, "skill_planning", self.planner)
+                raw_value = getattr(self.planner, "last_raw_values", {}).get("skill_planning")
+                if raw_value is not None:
+                    raw_path = out / "raw_skill_plan.json"
+                    raw_path.write_text(json.dumps(raw_value, ensure_ascii=False, indent=2), encoding="utf-8")
+                    planner_artifacts["raw_skill_plan.json"] = str(raw_path)
             status = "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded) else ("asset_missing" if "asset_missing" in str(exc) else ("unsupported_recipe" if "unsupported_recipe" in str(exc) else ("grounding_ambiguous" if "grounding_ambiguous" in str(exc) else ("relation_not_satisfied" if "relation_not_satisfied" in str(exc) else "planning_failed"))))
             result = PipelineResult(task_intent=intent.model_dump(mode="json") if intent else {"instruction": instruction}, scene_registry=registry.model_dump(mode="json") if registry else {}, status=status, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=str(exc))
             result.artifacts.update(planner_artifacts)

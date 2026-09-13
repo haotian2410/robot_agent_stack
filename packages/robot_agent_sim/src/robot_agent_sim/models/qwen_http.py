@@ -34,6 +34,9 @@ class QwenHTTPProvider:
         self.api_key = api_key
         self.timeout = timeout
         self.calls: list[dict[str, Any]] = []
+        # Structured final responses are retained for observability even when
+        # the subsequent Pydantic contract validation rejects them.
+        self.last_raw_values: dict[str, Any] = {}
         self.stage_max_completion_tokens = stage_max_completion_tokens or {
             # Chained open/pick/place/close tasks can contain several entity
             # and operation records.  256 tokens truncates valid JSON from
@@ -124,7 +127,10 @@ class QwenHTTPProvider:
             "goals": [item.model_dump(mode="json") for item in request.context.goals],
             "skills": request.skill_catalog,
         })
-        return SkillPlanLLMOutput.model_validate(json.loads(self._call("skill_planning", SKILL_PLANNING_PROMPT, content)))
+        raw_text = self._call("skill_planning", SKILL_PLANNING_PROMPT, content)
+        raw_value = json.loads(raw_text)
+        self.last_raw_values["skill_planning"] = raw_value
+        return SkillPlanLLMOutput.model_validate(raw_value)
 
 
 def _extract_json(content: str) -> str:
