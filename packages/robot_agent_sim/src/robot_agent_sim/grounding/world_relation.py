@@ -30,25 +30,27 @@ class WorldRelationResolver:
             resolving.add(entity_id)
             values = candidates.get(entity_id, [])
             if not values: raise WorldRelationError(f"missing visual candidates for {entity_id}")
-            relation = next((item for item in intent.spatial_relations if item.scope == "selection" and item.subject == entity_id), None)
-            if relation is None:
+            relations = [item for item in intent.spatial_relations if item.scope == "selection" and item.subject == entity_id]
+            if not relations:
                 if len(values) != 1: raise RelationAmbiguous(f"grounding_ambiguous: multiple candidates without selection relation: {entity_id}")
                 result = values[0]
             else:
+                relation = relations[0]
                 relation_type = relation.relation
                 if relation_type in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}:
                     reference = choose(relation.reference)
                     reference_position = positions[reference["object_id"]]
                     result = min(values, key=lambda value: math.dist(positions[value["object_id"]][:2], reference_position[:2])) if relation_type == SpatialRelationType.NEAREST else max(values, key=lambda value: math.dist(positions[value["object_id"]][:2], reference_position[:2]))
                 else:
-                    axis_sign = {
+                    axis_sign_map = {
                         SpatialRelationType.LEFT: (0, 1), SpatialRelationType.LEFT_OF: (0, 1),
                         SpatialRelationType.RIGHT: (0, -1), SpatialRelationType.RIGHT_OF: (0, -1),
                         SpatialRelationType.FRONT: (1, -1), SpatialRelationType.FRONT_OF: (1, -1),
                         SpatialRelationType.BACK: (1, 1), SpatialRelationType.BEHIND: (1, 1),
                         SpatialRelationType.UP: (2, -1), SpatialRelationType.ABOVE: (2, -1),
                         SpatialRelationType.DOWN: (2, 1), SpatialRelationType.BELOW: (2, 1),
-                    }.get(relation_type)
+                    }
+                    axis_sign = axis_sign_map.get(relation_type)
                     if axis_sign is None: raise WorldRelationError(f"unsupported selection relation: {relation_type}")
                     axis, sign = axis_sign
                     if relation.reference:
@@ -61,7 +63,13 @@ class WorldRelationResolver:
                             raise RelationAmbiguous(f"grounding_ambiguous: {entity_id} {relation_type} {relation.reference}")
                         result = satisfying[0]
                     else:
-                        result = min(values, key=lambda value: sign * positions[value["object_id"]][axis])
+                        unary_axes = [axis_sign_map.get(item.relation) for item in relations]
+                        if any(item is None for item in unary_axes):
+                            raise WorldRelationError(f"unsupported compound selection relations: {relations}")
+                        result = min(values, key=lambda value: sum(
+                            item_sign * positions[value["object_id"]][item_axis]
+                            for item_axis, item_sign in unary_axes
+                        ))
             resolving.remove(entity_id); selected[entity_id] = result; return result
 
         for entity in intent.entities: choose(entity.entity_id)

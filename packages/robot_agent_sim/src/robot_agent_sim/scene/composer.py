@@ -142,13 +142,20 @@ class SceneComposer:
             SpatialRelationType.UP: Direction.UP,
             SpatialRelationType.DOWN: Direction.DOWN,
         }
-        unary = next((unary_relations[r.relation] for r in intent.spatial_relations if r.subject == entity_id and r.relation in unary_relations), None)
+        unary = [unary_relations[r.relation] for r in intent.spatial_relations if r.subject == entity_id and r.relation in unary_relations]
         presets = {Direction.LEFT: (-0.22, 0.0, 0.0), Direction.RIGHT: (0.22, 0.0, 0.0),
                    Direction.FRONT: (0.0, 0.38, 0.0), Direction.BACK: (0.0, -0.38, 0.0),
                    Direction.UP: (0.0, 0.0, 0.20), Direction.DOWN: (0.0, 0.0, 0.02)}
         candidates = []
         if preferred is not None: candidates.append((preferred[0], preferred[1], preferred[2] if len(preferred) == 3 else 0.0))
-        if unary in presets: candidates.append(presets[unary])
+        if unary:
+            combined = [0.0, 0.0, 0.0]
+            for direction in unary:
+                preset = presets[direction]
+                for axis, value in enumerate(preset):
+                    if value:
+                        combined[axis] = value
+            candidates.append(tuple(combined))
         candidates.extend((rng.uniform(*WORKSPACE_X), rng.uniform(*WORKSPACE_Y), 0.0) for _ in range(200))
         for x, y, z in candidates:
             x = max(WORKSPACE_X[0] + dimensions[0] / 2, min(WORKSPACE_X[1] - dimensions[0] / 2, x))

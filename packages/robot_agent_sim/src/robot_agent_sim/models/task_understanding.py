@@ -58,6 +58,8 @@ class TaskParseLLMOutput(StrictModel):
             raise ValueError("accepted parse requires entities and operations")
         if self.status != "accepted" and (self.entities or self.operations or self.relations):
             raise ValueError("rejected parse must not include a plan")
+        if self.status == "accepted" and self.raw_direction is not None and self.raw_direction not in {"left", "right", "front", "back", "up", "down"}:
+            raise ValueError("accepted motion direction must be one of left/right/front/back/up/down")
         return self
 
 
@@ -91,5 +93,6 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
         entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color) for e in parsed.entities],
         operations=operations,
         spatial_relations=[SpatialRelation(scope=r.scope, subject=r.subject, relation=r.relation, reference=r.reference) for r in parsed.relations],
+        raw_direction=parsed.raw_direction if parsed.status == "accepted" else None,
         explanation=messages.get(parsed.status, ""),
     )

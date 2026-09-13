@@ -94,6 +94,7 @@ class TaskIntent(BaseModel):
     entities: list[TaskEntity] = Field(default_factory=list)
     operations: list[Operation] = Field(default_factory=list)
     spatial_relations: list[SpatialRelation] = Field(default_factory=list)
+    raw_direction: Direction | None = None
     explanation: str = ""
 
     @model_validator(mode="after")
