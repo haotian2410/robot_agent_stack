@@ -41,7 +41,7 @@ class QwenHTTPProvider:
             # Chained open/pick/place/close tasks can contain several entity
             # and operation records.  256 tokens truncates valid JSON from
             # local Qwen before the outer object is closed.
-            "task_understanding": 768, "vision_grounding": 384, "skill_planning": 512,
+            "task_understanding": 768, "vision_grounding": 384, "skill_planning": 1024,
         }
         self.stage_generation = stage_generation or {}
         self.use_structured_output = "json_object" if use_structured_output is True else ("off" if use_structured_output is False else use_structured_output)
@@ -94,14 +94,14 @@ class QwenHTTPProvider:
             if not isinstance(content, str) or not content.strip():
                 raise QwenProviderError(f"{stage}: empty model content")
             extracted = _extract_json(content)
-            self.calls.append({"stage": stage, "status": "succeeded", "model": self.model, "prompt_tokens": body.get("usage", {}).get("prompt_tokens"), "completion_tokens": body.get("usage", {}).get("completion_tokens")})
+            self.calls.append({"stage": stage, "status": "succeeded", "model": self.model, "prompt_tokens": body.get("usage", {}).get("prompt_tokens"), "completion_tokens": body.get("usage", {}).get("completion_tokens"), "finish_reason": body.get("choices", [{}])[0].get("finish_reason")})
             return extracted
         except QwenProviderError as exc:
-            self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": getattr(response, "status_code", None), "error": str(exc)})
+            self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": getattr(response, "status_code", None), "finish_reason": None, "error": str(exc)})
             raise
         except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, ValidationError) as exc:
             status = getattr(response, "status_code", None)
-            self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": status, "error": str(exc)})
+            self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": status, "finish_reason": None, "error": str(exc)})
             raise QwenProviderError(f"{stage}: {type(exc).__name__}: {exc}") from exc
 
     def understand(self, request):

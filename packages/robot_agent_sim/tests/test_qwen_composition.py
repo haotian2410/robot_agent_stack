@@ -108,9 +108,23 @@ def test_root_single_operation_is_rejected_and_raw_is_retained(monkeypatch):
     assert provider.calls[-1]["prompt_tokens"] == 17
 
 
+def test_qwen_response_finish_reason_is_recorded(monkeypatch):
+    class Response:
+        status_code = 200
+        def raise_for_status(self): return None
+        def json(self):
+            return {"choices": [{"message": {"content": '{"id":"op-1","steps":[]}'}, "finish_reason": "length"}], "usage": {"prompt_tokens": 4, "completion_tokens": 8}}
+    monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", lambda *args, **kwargs: Response())
+    provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
+    from robot_agent_sim.models.skill_planning import SkillPlanningRequest
+    with pytest.raises(ValidationError):
+        provider.plan(SkillPlanningRequest(context=build_planner_context(cabinet_task(), SIDECAR), skill_catalog=REGISTRY.prompt_catalog()))
+    assert provider.calls[-1]["finish_reason"] == "length"
+
+
 def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
     class BrokenPlanner:
-        calls = [{"stage": "skill_planning", "status": "succeeded", "prompt_tokens": 23, "completion_tokens": 11}]
+        calls = [{"stage": "skill_planning", "status": "succeeded", "prompt_tokens": 23, "completion_tokens": 11, "finish_reason": "length"}]
         last_raw_values = {"skill_planning": {"id": "op-1", "steps": []}}
 
         def plan(self, request):
@@ -123,3 +137,6 @@ def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
     assert result.model_usage["stages"][-1]["prompt_tokens"] == 23
     assert result.model_usage["stages"][-1]["completion_tokens"] == 11
     assert result.model_usage["stages"][-1]["total_tokens"] == 34
+    assert result.model_usage["stages"][-1]["finish_reason"] == "length"
+    assert result.source_scene is not None
+    assert result.interaction_registry is not None

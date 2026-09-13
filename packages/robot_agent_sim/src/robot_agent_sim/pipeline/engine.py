@@ -189,7 +189,17 @@ class PipelineEngine:
                     raw_path.write_text(json.dumps(raw_value, ensure_ascii=False, indent=2), encoding="utf-8")
                     planner_artifacts["raw_skill_plan.json"] = str(raw_path)
             status = "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded) else ("asset_missing" if "asset_missing" in str(exc) else ("unsupported_recipe" if "unsupported_recipe" in str(exc) else ("grounding_ambiguous" if "grounding_ambiguous" in str(exc) else ("relation_not_satisfied" if "relation_not_satisfied" in str(exc) else "planning_failed"))))
-            result = PipelineResult(task_intent=intent.model_dump(mode="json") if intent else {"instruction": instruction}, scene_registry=registry.model_dump(mode="json") if registry else {}, status=status, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=str(exc))
+            failure_scene = None
+            if scene is not None:
+                failure_scene = str(Path(scene).resolve())
+            elif "xml_path" in locals():
+                failure_scene = str(Path(xml_path).resolve())
+            failure_registry = None
+            if scene is not None and interaction_registry is not None:
+                failure_registry = str(Path(interaction_registry).resolve())
+            elif scene is None and "generated_interactions" in locals():
+                failure_registry = str(Path(generated_interactions).resolve())
+            result = PipelineResult(task_intent=intent.model_dump(mode="json") if intent else {"instruction": instruction}, scene_registry=registry.model_dump(mode="json") if registry else {}, status=status, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=str(exc), source_scene=failure_scene, interaction_registry=failure_registry)
             result.artifacts.update(planner_artifacts)
             if observation is not None: self._add_observation_artifacts(result.artifacts, observation)
             return self._write_result(result, out)

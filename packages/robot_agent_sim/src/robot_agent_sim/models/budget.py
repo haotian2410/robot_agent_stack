@@ -37,7 +37,7 @@ class ModelCallBudget:
         if stage not in self.allowed_stages or self.calls >= self.max_calls or (stage in self.stage_limits and used >= self.stage_limits[stage]):
             raise ModelCallBudgetExceeded(f"model call budget exceeded at {stage}")
         self.calls += 1
-        self.stages.append({"stage": stage, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        self.stages.append({"stage": stage, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "finish_reason": None})
 
     def update(self, stage: str, record: dict | None):
         if not record: return
@@ -45,6 +45,8 @@ class ModelCallBudget:
         for key in ("prompt_tokens", "completion_tokens"):
             value = record.get(key)
             if isinstance(value, int): item[key] = value
+        if record.get("finish_reason") is not None:
+            item["finish_reason"] = record["finish_reason"]
         item["total_tokens"] = item["prompt_tokens"] + item["completion_tokens"]
 
     def summary(self):
