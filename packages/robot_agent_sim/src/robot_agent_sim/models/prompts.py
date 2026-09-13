@@ -33,7 +33,8 @@ SKILL_PLANNING_PROMPT = """你是机器人高层技能规划器。
 - target/reference/source/destination 只能引用当前 operation 的角色；
 - 不要重新解释或修改给定 operation type；
 - 不要输出 object_id、step_id、depends_on、XYZ、关节角、轨迹、距离或解释；
-- 输出必须严格满足 SkillPlan LLM schema。"""
+- 输出必须严格满足 SkillPlan LLM schema，且必须覆盖 operations 中的每一个 operation；
+- 顶层始终是一个对象，唯一字段为 operations，其值是 operation 计划数组；每项形如 {"id":"op-...","steps":[{"skill":"...","target":null,"reference":null,"region":null}]}。"""
 
 
 def prompt_payload(value) -> str:
