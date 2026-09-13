@@ -45,19 +45,33 @@ def compile_execution_bundle(
     operations = {item.operation_id: item for item in grounded_task.operations}
 
     commands: list[SkillCommand] = []
+    traces: list[dict[str, Any]] = []
     profile = load_execution_profile()
 
+    current_trace: dict[str, Any] | None = None
+
     def add(skill: str, target: str, source_step: str, **parameters: Any) -> None:
-        commands.append(
-            SkillCommand(
-                command_id=f"command-{len(commands) + 1:03d}",
-                source_skill_step_id=source_step,
-                skill_name=skill,
-                parameters={"target": target, **parameters},
-            )
+        command = SkillCommand(
+            command_id=f"command-{len(commands) + 1:03d}",
+            source_skill_step_id=source_step,
+            skill_name=skill,
+            parameters={"target": target, **parameters},
         )
+        commands.append(command)
+        if current_trace is not None:
+            current_trace["generated_commands"].append(command.model_dump(mode="json"))
 
     for step in skill_plan.steps:
+        current_trace = {
+            "skill_step_id": step.step_id,
+            "operation_id": step.operation_id,
+            "semantic_skill": step.skill_name,
+            "target_object": step.target_object,
+            "reference_object": step.reference_object,
+            "resolved_anchor": None,
+            "generated_commands": [],
+        }
+        traces.append(current_trace)
         operation = operations[step.operation_id]
         target = step.target_object
         if step.skill_name == "search":
@@ -76,6 +90,7 @@ def compile_execution_bundle(
             if desired is not None and desired not in anchors:
                 raise ValueError(f"{ErrorCode.ANCHOR_NOT_FOUND}: {target}.{desired}")
             anchor = desired if desired is not None else spatial.get("default_anchor")
+            current_trace["resolved_anchor"] = anchor
             parameters = {"planning_method": "auto"}
             if anchor:
                 parameters["anchor"] = anchor
@@ -139,6 +154,9 @@ def compile_execution_bundle(
     )
     (output / "execution_bundle.json").write_text(
         bundle.model_dump_json(indent=2), encoding="utf-8"
+    )
+    (output / "compiled_step_trace.json").write_text(
+        json.dumps(traces, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return bundle
 

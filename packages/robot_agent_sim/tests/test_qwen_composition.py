@@ -13,6 +13,7 @@ from robot_agent_sim.planning.context_builder import build_planner_context
 from robot_agent_sim.planning.recipe_planner import RecipePlanner
 from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
 from robot_agent_sim.skills.registry import REGISTRY
+from robot_agent_sim.execution.compiler import compile_execution_bundle
 
 
 SIDECAR = "packages/robot_agent_control/demo/common/scenes/scene_001.interactions.json"
@@ -140,3 +141,20 @@ def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
     assert result.model_usage["stages"][-1]["finish_reason"] == "length"
     assert result.source_scene is not None
     assert result.interaction_registry is not None
+
+
+def test_compiler_trace_records_semantic_anchor_mapping(tmp_path):
+    task = cabinet_task()
+    bundle = compile_execution_bundle(
+        RecipePlanner().plan(task), task,
+        scene_path="packages/robot_agent_control/world_model/robotsim/scene_001.xml",
+        interaction_registry_path=SIDECAR,
+        output_dir=tmp_path,
+        route="B",
+    )
+    assert bundle.commands
+    trace = json.loads((tmp_path / "compiled_step_trace.json").read_text())
+    assert len(trace) == len(RecipePlanner().plan(task).steps)
+    step10 = next(item for item in trace if item["skill_step_id"] == "step-10")
+    assert step10["resolved_anchor"] == "interior"
+    assert any(item["parameters"].get("anchor") == "interior" for item in step10["generated_commands"])

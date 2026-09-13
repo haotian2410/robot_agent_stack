@@ -213,7 +213,14 @@ class PipelineEngine:
     def _write_result(result, out):
         result.model_usage.setdefault("route", result.route)
         result.model_usage.setdefault("planner", result.planner)
-        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
+        provenance = {
+            "task_understanding": "qwen" if getattr(result, "planner", "recipe") == "qwen" and result.model_usage.get("stages") else "fake",
+            "grounding": "interaction_registry" if result.interaction_registry else ("asset_scene_binding" if result.route == "A" else "visual_grounding"),
+            "skill_planner": result.planner,
+            "validator": "semantic" if result.planner == "qwen" else "recipe",
+            "recipe_used": result.planner == "recipe",
+        }
+        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
         for name, payload in payloads.items():
             path = out / name
             if payload is None:
