@@ -76,18 +76,41 @@ class FakeTaskUnderstandingProvider:
         has_left = any(token in low for token in ("左", "西", "left", "west"))
         has_right = any(token in low for token in ("右", "东", "right", "east"))
         pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "move left", "move right", "move front", "move back", "move up", "move down"))
-        baseball = next((entity for entity in entities if entity.id.startswith("baseball_")), None)
-        basket = next((entity for entity in entities if entity.id.startswith("basket_")), None)
         spatial_selector_subjects: set[str] = set()
-        if baseball is not None and "左上角" in text:
-            relations.extend([ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.LEFT), ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.FRONT)])
-            spatial_selector_subjects.add(baseball.id)
-        elif baseball is not None and ("左边" in text or "左侧" in text):
-            relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.LEFT))
-            spatial_selector_subjects.add(baseball.id)
-        if basket is not None and "右下角" in text:
-            relations.extend([ParseRelation(scope="selection", subject=basket.id, relation=SpatialRelationType.RIGHT), ParseRelation(scope="selection", subject=basket.id, relation=SpatialRelationType.BACK)])
-            spatial_selector_subjects.add(basket.id)
+        # Entity corner selectors are planar: 上/下 in 左上/左下 means
+        # front/back, never the world Z axis.  Resolve each selector against
+        # the nearest entity name so source and destination can use different
+        # corners in one instruction.
+        corner_relations = {
+            "左上角": (SpatialRelationType.LEFT, SpatialRelationType.FRONT),
+            "右上角": (SpatialRelationType.RIGHT, SpatialRelationType.FRONT),
+            "左下角": (SpatialRelationType.LEFT, SpatialRelationType.BACK),
+            "右下角": (SpatialRelationType.RIGHT, SpatialRelationType.BACK),
+        }
+        baseball = next((entity for entity in entities if entity.id.startswith("baseball_")), None)
+        aliases = {
+            "苹果": "apple", "香蕉": "banana", "棒球": "baseball", "篮子": "basket",
+            "banana": "banana", "baseball": "baseball", "basket": "basket",
+        }
+        for entity in entities:
+            entity_aliases = [alias for alias, stem in aliases.items() if entity.id.startswith(stem + "_")]
+            name_positions = [text.find(alias) for alias in entity_aliases if text.find(alias) >= 0]
+            if not name_positions:
+                continue
+            name_pos = min(name_positions)
+            preceding = [(text.rfind(corner, 0, name_pos), rels) for corner, rels in corner_relations.items()]
+            preceding = [(pos, rels) for pos, rels in preceding if pos >= 0]
+            if preceding:
+                _, selected_relations = max(preceding, key=lambda item: item[0])
+                relations.extend(ParseRelation(scope="selection", subject=entity.id, relation=rel) for rel in selected_relations)
+                spatial_selector_subjects.add(entity.id)
+        if baseball is not None and baseball.id not in spatial_selector_subjects:
+            if "左边" in text or "左侧" in text:
+                relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.LEFT))
+                spatial_selector_subjects.add(baseball.id)
+            elif "右边" in text or "右侧" in text:
+                relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.RIGHT))
+                spatial_selector_subjects.add(baseball.id)
         if not spatial_selector_subjects and "左上方" in text and not pure_motion:
             subject = entities[0].id
             relations.extend([ParseRelation(scope="selection", subject=subject, relation=SpatialRelationType.LEFT), ParseRelation(scope="selection", subject=subject, relation=SpatialRelationType.FRONT)])
@@ -106,7 +129,7 @@ class FakeTaskUnderstandingProvider:
             relations.append(ParseRelation(scope="selection", subject=red.id, relation=SpatialRelationType.NEAREST, reference=yellow.id))
         if "最远" in text or "farthest" in low:
             relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=SpatialRelationType.FARTHEST, reference=entities[-1].id))
-        if not spatial_selector_subjects:
+        if not spatial_selector_subjects and not pure_motion:
             for tokens, relation in ((('前', 'north', 'front'), SpatialRelationType.FRONT), (('后', 'south', 'back'), SpatialRelationType.BACK), (('上', 'above', 'up'), SpatialRelationType.UP), (('下', 'below', 'down'), SpatialRelationType.DOWN)):
                 if (
                     any(token in text or token in low for token in tokens)

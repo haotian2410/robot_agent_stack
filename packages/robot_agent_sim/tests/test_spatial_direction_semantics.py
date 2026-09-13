@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest, enrich_task
@@ -34,12 +35,31 @@ def test_left_baseball_is_entity_selection_not_motion():
     assert [(r.subject, r.relation) for r in intent.spatial_relations] == [("baseball_01", SpatialRelationType.LEFT)]
 
 
-def test_upper_left_baseball_uses_existing_relations():
-    parsed, intent = parse("抓取左上角的棒球")
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("左上角", {SpatialRelationType.LEFT, SpatialRelationType.FRONT}),
+        ("右上角", {SpatialRelationType.RIGHT, SpatialRelationType.FRONT}),
+        ("左下角", {SpatialRelationType.LEFT, SpatialRelationType.BACK}),
+        ("右下角", {SpatialRelationType.RIGHT, SpatialRelationType.BACK}),
+    ],
+)
+def test_corner_entity_selectors_are_planar(phrase, expected):
+    parsed, intent = parse(f"抓取{phrase}的棒球")
     assert parsed.status == "accepted"
     assert intent.raw_direction is None
-    relations = {(r.subject, r.relation) for r in intent.spatial_relations}
-    assert relations == {("baseball_01", SpatialRelationType.LEFT), ("baseball_01", SpatialRelationType.FRONT)}
+    relations = {r.relation for r in intent.spatial_relations if r.subject == "baseball_01"}
+    assert relations == expected
+    assert SpatialRelationType.UP not in relations
+    assert SpatialRelationType.DOWN not in relations
+
+
+@pytest.mark.parametrize(("phrase", "expected"), [("向上", "up"), ("向下", "down")])
+def test_motion_direction_does_not_become_spatial_selector(phrase, expected):
+    parsed, intent = parse(f"把棒球{phrase}移动")
+    assert parsed.status == "accepted"
+    assert intent.raw_direction == expected
+    assert intent.spatial_relations == []
 
 
 def test_corner_pick_and_place_layout_uses_both_axes(tmp_path):

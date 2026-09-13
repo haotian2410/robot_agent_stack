@@ -230,11 +230,14 @@ def run(
         )
         if result.status != "accepted":
             raise ValueError(f"planning status is {result.status}: {result.error or '-'}")
+        # Show the complete semantic plan before compile/MuJoCo execution.
+        # This is especially useful for Route B, where a compile or runtime
+        # failure should not hide the Qwen/grounding/skill-planning result.
+        _print_summary(result)
         bundle = compile_directory(output_dir)
     except (OSError, ValueError, KeyError, ParseError, ValidationError) as exc:
         typer.echo(f"运行准备失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
-    _print_summary(result)
     _execute_subprocess(Path(bundle.task_dir) / "execution_bundle.json", viewer_mode)
 
 
@@ -258,6 +261,26 @@ def _print_summary(result) -> None:
     typer.echo(f"Atomic Skill 调用顺序：{skills}")
     typer.echo(f"模型调用次数：{getattr(result, 'model_call_count', 0)}")
     typer.echo(f"规划器：{getattr(result, 'planner', 'recipe')} / Route {getattr(result, 'route', '-')}")
+    source_scene = getattr(result, "source_scene", None)
+    if source_scene:
+        typer.echo(f"场景来源：{source_scene}")
+    grounding = getattr(result, "visual_grounding", None) or {}
+    if grounding:
+        typer.echo(f"视觉/交互绑定：{grounding.get('method', '-')}")
+    usage = getattr(result, "model_usage", None) or {}
+    stages = usage.get("stages", [])
+    if stages:
+        typer.echo("Qwen 调用明细：")
+        for stage in stages:
+            typer.echo(
+                "  {stage}: prompt={prompt} completion={completion} total={total} finish={finish}".format(
+                    stage=stage.get("stage", "-"),
+                    prompt=stage.get("prompt_tokens", "-"),
+                    completion=stage.get("completion_tokens", "-"),
+                    total=stage.get("total_tokens", "-"),
+                    finish=stage.get("finish_reason", "-"),
+                )
+            )
 
 
 if __name__ == "__main__":
