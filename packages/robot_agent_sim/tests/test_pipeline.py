@@ -53,3 +53,31 @@ def test_route_a_home_keyframe_preserves_generated_free_object_positions(tmp_pat
         )
         assert tuple(runtime.data.xpos[body_id]) == pytest.approx(tuple(item["position"]))
     assert len({tuple(runtime.data.xpos[mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, item["body_name"])]) for item in movable}) == len(movable)
+
+
+def test_route_a_quantity_generates_three_nearest_candidates(tmp_path):
+    result = PipelineEngine().plan(
+        "把三个苹果中靠近篮子的苹果放到篮子里",
+        robot="ur5e", planner="recipe", output_dir=tmp_path,
+    )
+    candidates = [
+        item for item in result.scene_registry["objects"]
+        if item["candidate_for"] == "apple_01"
+    ]
+    assert len(candidates) == 3
+    assert result.scene_registry["bindings"]["apple_01"] == min(
+        candidates,
+        key=lambda item: (item["position"][0] - 0.213542) ** 2 + (item["position"][1] - 0.3405) ** 2,
+    )["object_id"]
+
+
+def test_directional_move_recipe_grasps_moves_and_releases(tmp_path):
+    result = PipelineEngine().plan(
+        "把苹果向右移动一点", robot="ur5e", planner="recipe", output_dir=tmp_path,
+    )
+    assert result.task_intent["raw_direction"] == "right"
+    assert result.task_intent["operations"][0]["distance_m"] == 0.1
+    assert [step["skill_name"] for step in result.skill_plan["steps"]] == [
+        "locate", "move", "grasp", "move", "release"
+    ]
+    assert result.skill_plan["steps"][3]["motion_direction"] == "right"

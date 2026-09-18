@@ -79,17 +79,26 @@ class SceneComposer:
         for entity in [e for e in intent.entities if e.entity_id in selection_subjects]:
             relation = next(r for r in intent.spatial_relations if r.subject == entity.entity_id and r.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST})
             reference = next(item for item in objects if item.object_id == bindings[relation.reference])
-            # Put the selected (near) candidate at a deterministic offset
-            # that is guaranteed to be closer than the distractor.
-            # Build both candidates against the already-placed objects.  The
-            # near candidate's preferred offset is tried first; if clipping
-            # or workspace bounds prevent it, the seeded sampler still finds
-            # a valid location and ranking below preserves the selection.
-            near = self._make_object(entity, assets[entity.entity_id], 1, objects, rng, intent, preferred=(reference.position[0] + 0.12, reference.position[1]))
-            objects.append(near)
-            far = self._make_object(entity, assets[entity.entity_id], 2, objects, rng, intent, preferred=(reference.position[0] - 0.26, reference.position[1]))
-            objects.append(far)
-            ranked = sorted([near, far], key=lambda item: _distance(item.position, reference.position), reverse=relation.relation == SpatialRelationType.FARTHEST)
+            # Generate the requested number of candidates.  Selection tasks
+            # need at least two candidates even when the language omits an
+            # explicit count; an explicit count such as “三个苹果” is kept.
+            candidate_count = max(int(entity.count), 2)
+            candidates = []
+            for index in range(candidate_count):
+                if index == 0:
+                    preferred = (reference.position[0] + 0.12, reference.position[1])
+                else:
+                    preferred = (
+                        reference.position[0] - 0.26 - 0.12 * (index - 1),
+                        reference.position[1] + 0.18 * (index - 1),
+                    )
+                candidate = self._make_object(
+                    entity, assets[entity.entity_id], index + 1, objects, rng,
+                    intent, preferred=preferred,
+                )
+                objects.append(candidate)
+                candidates.append(candidate)
+            ranked = sorted(candidates, key=lambda item: _distance(item.position, reference.position), reverse=relation.relation == SpatialRelationType.FARTHEST)
             # Preserve the natural-language selection in the registry.
             bindings[entity.entity_id] = ranked[0].object_id
 

@@ -80,6 +80,19 @@ def test_motion_direction_does_not_become_spatial_selector(phrase, expected):
     assert intent.spatial_relations == []
 
 
+def test_quantity_and_nearest_selection_are_preserved():
+    parsed, intent = parse("把三个苹果中靠近篮子的苹果放到篮子里")
+    assert parsed.status == "accepted"
+    apple = next(entity for entity in parsed.entities if entity.id == "apple_01")
+    assert apple.count == 3
+    assert any(
+        relation.subject == "apple_01"
+        and relation.relation == SpatialRelationType.NEAREST
+        and relation.reference == "basket_01"
+        for relation in parsed.relations
+    )
+
+
 def test_corner_pick_and_place_layout_uses_both_axes(tmp_path):
     parsed, intent = parse("把左上角的棒球放到右下角的篮子里")
     assert parsed.status == "accepted"

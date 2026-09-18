@@ -16,7 +16,7 @@ class FakeTaskUnderstandingProvider:
         text = request.instruction.strip()
         low = text.casefold()
         diagonals = ("东北", "东南", "西北", "西南", "左前方", "右前方", "斜上方", "左上方", "右下方", "northeast", "northwest", "southeast", "southwest", "diagonal")
-        motion_words = ("移动", "移到", "move")
+        motion_words = ("移动", "移到", "往左", "往右", "往前", "往后", "往上", "往下", "move")
         # Composite directions are ambiguous only when they modify the
         # motion itself.  “左上角的棒球” is an entity selector and must be
         # parsed as spatial relations instead.
@@ -30,9 +30,17 @@ class FakeTaskUnderstandingProvider:
 
         entities: list[ParseEntity] = []
 
-        def add(eid, name, category, color=None):
+        def quantity_for(token):
+            match = re.search(r"(一|两|二|三|四|五|六|七|八|九|十|[1-9][0-9]*)个?" + re.escape(token), text)
+            values = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+            if not match:
+                return 1
+            value = match.group(1)
+            return values[value] if value in values else int(value)
+
+        def add(eid, name, category, color=None, count=1):
             if not any(entity.id == eid for entity in entities):
-                entities.append(ParseEntity(id=eid, name=name, category=category, color=color))
+                entities.append(ParseEntity(id=eid, name=name, category=category, color=color, count=count))
 
         if "红" in text or "red" in low:
             if "球" in text or "ball" in low:
@@ -60,7 +68,7 @@ class FakeTaskUnderstandingProvider:
             )
         for token, name, category in (("苹果", "apple", "fruit"), ("香蕉", "banana", "fruit"), ("棒球", "baseball", "ball"), ("篮子", "basket", "container"), ("杯子", "cup", "container"), ("魔方", "rubiks cube", "cube"), ("海绵", "sponge", "sponge"), ("勺子", "spoon", "utensil"), ("糖盒", "sugar box", "package")):
             if token in text or token in low:
-                add(f"{name.replace(' ', '_')}_01", name, category)
+                add(f"{name.replace(' ', '_')}_01", name, category, count=quantity_for(token))
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
         for label in ("a", "b", "c"):
@@ -75,7 +83,7 @@ class FakeTaskUnderstandingProvider:
         put = any(token in text for token in ("放进", "放入", "放到", "放在")) or "put" in low
         has_left = any(token in low for token in ("左", "西", "left", "west"))
         has_right = any(token in low for token in ("右", "东", "right", "east"))
-        pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "move left", "move right", "move front", "move back", "move up", "move down"))
+        pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "往左", "往右", "往前", "往后", "往上", "往下", "move left", "move right", "move front", "move back", "move up", "move down"))
         spatial_selector_subjects: set[str] = set()
         # Entity corner selectors are planar: 上/下 in 左上/左下 means
         # front/back, never the world Z axis.  Resolve each selector against
@@ -123,10 +131,11 @@ class FakeTaskUnderstandingProvider:
             relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=SpatialRelationType.LEFT))
         elif has_right and not spatial_selector_subjects and not pure_motion:
             relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=SpatialRelationType.RIGHT))
-        if "最近" in text or "nearest" in low:
-            red = next((entity for entity in entities if entity.color == "red"), entities[0])
-            yellow = next((entity for entity in entities if entity.color == "yellow"), entities[-1])
-            relations.append(ParseRelation(scope="selection", subject=red.id, relation=SpatialRelationType.NEAREST, reference=yellow.id))
+        if "最近" in text or "靠近" in text or "nearest" in low:
+            subject = next((entity for entity in entities if entity.color == "red"), entities[0])
+            reference = next((entity for entity in entities if entity.color == "yellow"), None)
+            reference = reference or next((entity for entity in entities if entity.category == "container" and entity.id != subject.id), entities[-1])
+            relations.append(ParseRelation(scope="selection", subject=subject.id, relation=SpatialRelationType.NEAREST, reference=reference.id))
         if "最远" in text or "farthest" in low:
             relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=SpatialRelationType.FARTHEST, reference=entities[-1].id))
         if not spatial_selector_subjects and not pure_motion:
@@ -199,7 +208,7 @@ class FakeTaskUnderstandingProvider:
             return TaskParseLLMOutput(status="unsupported_task", raw_task=text)
         motion_direction = None
         if any(token in low for token in motion_words):
-            direction_tokens = (("向左", "left"), ("向右", "right"), ("向前", "front"), ("向后", "back"), ("向上", "up"), ("向下", "down"), ("left", "left"), ("right", "right"), ("front", "front"), ("back", "back"), ("up", "up"), ("down", "down"))
+            direction_tokens = (("向左", "left"), ("向右", "right"), ("向前", "front"), ("向后", "back"), ("向上", "up"), ("向下", "down"), ("往左", "left"), ("往右", "right"), ("往前", "front"), ("往后", "back"), ("往上", "up"), ("往下", "down"), ("left", "left"), ("right", "right"), ("front", "front"), ("back", "back"), ("up", "up"), ("down", "down"))
             motion_direction = next((value for token, value in direction_tokens if token in low), None)
         return TaskParseLLMOutput(status="accepted", entities=entities, operations=operations, relations=relations, raw_direction=motion_direction)
 

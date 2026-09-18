@@ -28,6 +28,14 @@ def _locate(operation): return [("locate", "target", None, None)]
 def _search(operation): return [("search", "target", None, None)]
 def _move(operation):
     target = "target" if operation.target else "source"
+    if operation.motion_direction:
+        return [
+            ("locate", target, None, None),
+            ("move", target, None, "grasp_region"),
+            ("grasp", target, None, None),
+            ("move", target, None, "relative_motion"),
+            ("release", target, None, None),
+        ]
     return [("locate", target, None, None), ("move", target, "reference" if operation.reference else None, "relative_region" if operation.reference else "semantic_region")]
 def _release(operation):
     target = "target" if operation.target else "source"

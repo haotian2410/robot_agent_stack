@@ -78,12 +78,24 @@ def compile_execution_bundle(
             raise ValueError(f"{ErrorCode.PERCEPTION_REQUIRED}: search must finish before execution")
         if not target:
             raise ValueError(f"skill {step.step_id} has no grounded target")
-        if target not in objects and target != "home":
+        if target not in objects and target not in {"home", "end_effector"}:
             raise ValueError(f"{ErrorCode.TARGET_NOT_FOUND}: {target}")
 
         if step.skill_name == "locate":
             add("locate", target, step.step_id)
         elif step.skill_name == "move":
+            if step.semantic_target == "relative_motion":
+                if step.motion_direction is None or step.distance_m is None:
+                    raise ValueError("directional move requires motion_direction and distance_m")
+                add(
+                    "move", "end_effector", step.step_id,
+                    relation=step.motion_direction.value,
+                    distance_m=step.distance_m,
+                    frame="world",
+                    planning_method="linear",
+                )
+                current_trace["resolved_anchor"] = "relative_motion"
+                continue
             spatial = objects[target].get("spatial", {})
             desired = REGION_TO_ANCHOR.get(step.semantic_target or "")
             anchors = spatial.get("anchors", {})

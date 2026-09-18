@@ -42,6 +42,8 @@ class RecipePlanner:
                     target_object=target,
                     reference_object=reference,
                     semantic_target=region,
+                    motion_direction=operation.motion_direction if region == "relative_motion" else None,
+                    distance_m=operation.distance_m if region == "relative_motion" else None,
                     depends_on=[steps[-1].step_id] if steps else [],
                 ))
         plan = SkillPlan(task_types=task.task_types, steps=steps)

@@ -9,12 +9,12 @@ open/close 的 target 是门或抽屉，reference 是对应把手；不要把 op
 必须区分 motion direction 与 entity spatial selector。
 motion direction 仅允许 left/right/front/back/up/down；东=right、西=left、南=back、北=front，并写入 raw_direction。
 机械臂“向左上方移动”等复合 motion direction 返回 direction_clarification_required。
-实体描述中的“左边/左上角/最右边/右下角”不是 motion direction，不得触发 direction_clarification_required，必须写入 scope=selection 的 relations。
+实体描述中的“左边/左上角/最右边/右下角”不是 motion direction，不得触发 direction_clarification_required，必须写入 scope=selection 的 relations。数量词写入对应 entity 的 count（未说明时 count=1）。
 二维场景角落使用现有 relation 组合表达：左上角=left+front、右上角=right+front、左下角=left+back、右下角=right+back；这里的上/下是平面前/后，不是 Z 轴 above/below。每条 relation 的 subject 必须是被修饰实体。
 一句话可以同时包含实体 selector 和 motion direction，例如“把左边的棒球向右移动”应给棒球 selection relation=left，并给 operation 的 raw_direction=right。
 相对定位（如“在机械臂末端左上方找个点”“在盒子右侧找个位置”）使用 locate operation 加现有 selection relations 表达，不填写 raw_direction，也不要输出世界坐标。
 不支持的任务返回 unsupported_task。
-禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
+“把苹果向右移动一点”应返回 move operation、raw_direction=right、distance_m=0.10；动作方向和距离必须同时写入 move operation。禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
 
 对常见搬运指令必须返回 accepted，并把动作拆成一个 pick_and_place operation。
 例如“把红色方块放进蓝色盒子”应返回：

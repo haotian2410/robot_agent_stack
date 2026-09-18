@@ -17,6 +17,7 @@ class ParseEntity(StrictModel):
     name: str = Field(min_length=1)
     category: str = Field(min_length=1)
     color: str | None = None
+    count: int = Field(default=1, ge=1, le=100)
 
 
 class ParseOperation(StrictModel):
@@ -35,6 +36,8 @@ class ParseOperation(StrictModel):
     destination: str | None = None
     target: str | None = None
     reference: str | None = None
+    motion_direction: str | None = None
+    distance_m: float | None = Field(default=None, gt=0, le=2)
 
 
 class ParseRelation(StrictModel):
@@ -50,6 +53,7 @@ class TaskParseLLMOutput(StrictModel):
     operations: list[ParseOperation] = Field(default_factory=list)
     relations: list[ParseRelation] = Field(default_factory=list)
     raw_direction: str | None = None
+    distance_m: float | None = Field(default=None, gt=0, le=2)
     raw_task: str | None = None
 
     @model_validator(mode="after")
@@ -72,15 +76,19 @@ class TaskUnderstandingProvider(Protocol):
 
 
 def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
-    operations = [
-        Operation(
+    operations = []
+    for index, op in enumerate(parsed.operations):
+        distance_m = op.distance_m or parsed.distance_m
+        if distance_m is None and op.type == "move" and parsed.raw_direction:
+            distance_m = 0.10
+        operations.append(Operation(
             operation_id=f"op-{index + 1}", task_type=op.type, source=op.source,
             destination=op.destination, target=op.target, reference=op.reference,
             description=op.type.replace("_", " "),
             depends_on=[f"op-{index}"] if index else [],
-        )
-        for index, op in enumerate(parsed.operations)
-    ]
+            motion_direction=op.motion_direction or (parsed.raw_direction if op.type == "move" else None),
+            distance_m=distance_m,
+        ))
     task_types = list(dict.fromkeys(operation.task_type for operation in operations))
     if len(task_types) > 1:
         task_types.append(TaskType.MIXED)
@@ -90,7 +98,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
     }
     return TaskIntent(
         status=parsed.status, instruction=instruction, task_types=task_types,
-        entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color) for e in parsed.entities],
+        entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color, count=e.count) for e in parsed.entities],
         operations=operations,
         spatial_relations=[SpatialRelation(scope=r.scope, subject=r.subject, relation=r.relation, reference=r.reference) for r in parsed.relations],
         raw_direction=parsed.raw_direction if parsed.status == "accepted" else None,

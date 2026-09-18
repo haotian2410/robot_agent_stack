@@ -59,6 +59,7 @@ class TaskEntity(BaseModel):
     category: str = Field(min_length=1, max_length=50)
     aliases: list[str] = Field(default_factory=list, max_length=20)
     color: str | None = None
+    count: int = Field(default=1, ge=1, le=100)
 
 
 class SpatialRelation(BaseModel):
@@ -84,6 +85,8 @@ class Operation(BaseModel):
     reference: str | None = None
     description: str = Field(default="", max_length=300)
     depends_on: list[str] = Field(default_factory=list)
+    motion_direction: Direction | None = None
+    distance_m: float | None = Field(default=None, gt=0, le=2)
 
 
 class TaskIntent(BaseModel):

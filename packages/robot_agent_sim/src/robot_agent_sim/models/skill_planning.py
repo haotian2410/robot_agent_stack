@@ -55,7 +55,16 @@ def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPl
     steps: list[SkillStep] = []
     for operation_plan in output.operations:
         operation = operations[operation_plan.id]
-        for raw in operation_plan.steps:
+        raw_steps = operation_plan.steps
+        if operation.motion_direction and operation.task_type.value == "move":
+            raw_steps = [
+                LLMPlanStep(skill="locate", target="target"),
+                LLMPlanStep(skill="move", target="target", region="grasp_region"),
+                LLMPlanStep(skill="grasp", target="target"),
+                LLMPlanStep(skill="move", target="target", region="relative_motion"),
+                LLMPlanStep(skill="release", target="target"),
+            ]
+        for raw in raw_steps:
             target_entity = getattr(operation, raw.target) if raw.target else None
             reference_entity = getattr(operation, raw.reference) if raw.reference else None
             target = grounded.get(target_entity) if target_entity else None
@@ -68,6 +77,8 @@ def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPl
             steps.append(SkillStep(
                 step_id=step_id, operation_id=operation.operation_id, skill_name=raw.skill,
                 target_object=target, reference_object=reference, semantic_target=raw.region,
+                motion_direction=operation.motion_direction if raw.region == "relative_motion" else None,
+                distance_m=operation.distance_m if raw.region == "relative_motion" else None,
                 depends_on=[steps[-1].step_id] if steps else [],
             ))
     return SkillPlan(task_types=task.task_types, steps=steps)

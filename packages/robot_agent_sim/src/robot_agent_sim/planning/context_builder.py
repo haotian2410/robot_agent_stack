@@ -32,6 +32,8 @@ class PlannerOperation(_StrictModel):
     target: str | None = None
     reference: str | None = None
     depends_on: list[str] = Field(default_factory=list)
+    motion_direction: str | None = None
+    distance_m: float | None = None
 
 
 class PlannerGoal(_StrictModel):
@@ -105,6 +107,8 @@ def build_planner_context(
         target=operation.target,
         reference=operation.reference,
         depends_on=list(operation.depends_on),
+        motion_direction=operation.motion_direction.value if operation.motion_direction else None,
+        distance_m=operation.distance_m,
     ) for operation in task.operations]
     goals = [PlannerGoal(
         relation=relation.relation.value,

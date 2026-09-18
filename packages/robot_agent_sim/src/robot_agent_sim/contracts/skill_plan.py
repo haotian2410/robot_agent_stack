@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .task_intent import TaskType
+from .task_intent import Direction, TaskType
 
 
 class SkillStep(BaseModel):
@@ -16,6 +16,8 @@ class SkillStep(BaseModel):
     reference_object: str | None = None
     semantic_target: str | None = None
     depends_on: list[str] = Field(default_factory=list)
+    motion_direction: Direction | None = None
+    distance_m: float | None = Field(default=None, gt=0, le=2)
 
 
 class SkillPlan(BaseModel):
