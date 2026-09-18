@@ -29,3 +29,27 @@ def test_nearest_selection_binds_the_actual_nearest_candidate():
     selected_id = result.scene_registry["bindings"]["red_cube_01"]
     selected_distance = math.dist(yellow[:2], objects[selected_id]["position"][:2])
     assert selected_distance == min(math.dist(yellow[:2], item["position"][:2]) for item in candidates)
+
+
+def test_route_a_home_keyframe_preserves_generated_free_object_positions(tmp_path):
+    import mujoco
+    import pytest
+
+    from robot_agent_control.utils.simulation_runtime import SceneRobotRuntime
+
+    result = PipelineEngine().plan(
+        "把离黄色方块最近的红色方块放进盒子",
+        robot="ur5e", seed=2, output_dir=tmp_path,
+    )
+    runtime = SceneRobotRuntime(result.source_scene)
+    movable = [
+        item for item in result.scene_registry["objects"]
+        if item["model_name"] not in {"open_box", "button_basic"}
+    ]
+    assert len(movable) >= 2
+    for item in movable:
+        body_id = mujoco.mj_name2id(
+            runtime.model, mujoco.mjtObj.mjOBJ_BODY, item["body_name"]
+        )
+        assert tuple(runtime.data.xpos[body_id]) == pytest.approx(tuple(item["position"]))
+    assert len({tuple(runtime.data.xpos[mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, item["body_name"])]) for item in movable}) == len(movable)

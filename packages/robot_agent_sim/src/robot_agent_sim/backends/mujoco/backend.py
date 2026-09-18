@@ -29,7 +29,20 @@ class MujocoSceneBackend:
         if world is None: raise ValueError("base scene has no worldbody")
         by_model = {record.model_id: record for record in assets.values()}
         for record in by_model.values(): self._add_asset(asset, record)
-        for item in registry.objects: self._add_instance(world, item, by_model[item.model_id])
+        generated_qpos: list[float] = []
+        for item in registry.objects:
+            record = by_model[item.model_id]
+            self._add_instance(world, item, record)
+            if record.model_name not in {"open_box", "button_basic"}:
+                # These bodies are appended after every joint in the authored
+                # robot scene, so their free-joint qpos values are appended in
+                # the same order.  Without this tail, MuJoCo pads the existing
+                # home keyframe with origin poses and execution resets every
+                # generated payload onto the same world origin.
+                generated_qpos.extend((*item.position, 1.0, 0.0, 0.0, 0.0))
+            elif record.model_name == "button_basic":
+                generated_qpos.append(0.0)
+        self._extend_keyframes(root, generated_qpos)
         output_dir.mkdir(parents=True, exist_ok=True); target = output_dir / "scene.xml"; ET.ElementTree(root).write(target, encoding="utf-8", xml_declaration=True); return target
     @staticmethod
     def _validate(root):
@@ -107,6 +120,14 @@ class MujocoSceneBackend:
             x, y, h = dimensions; t = 0.008
             for name, pos, size in (("floor", (0,0,t/2), (x/2,y/2,t/2)), ("left", (-x/2+t/2,0,h/2), (t/2,y/2,h/2)), ("right", (x/2-t/2,0,h/2), (t/2,y/2,h/2)), ("front", (0,y/2-t/2,h/2), (x/2,t/2,h/2)), ("back", (0,-y/2+t/2,h/2), (x/2,t/2,h/2))): ET.SubElement(body, "geom", name=f"{item.object_id}_{name}", type="box", pos=" ".join(str(v) for v in pos), size=" ".join(str(v) for v in size), rgba=_rgba(item.semantic_name))
         else: ET.SubElement(body, "geom", name=f"{item.object_id}_button", type="cylinder", size="0.05 0.012", pos="0 0 0.032", rgba="0.8 0.1 0.1 1")
+    @staticmethod
+    def _extend_keyframes(root, generated_qpos):
+        if not generated_qpos:
+            return
+        suffix = " ".join(str(value) for value in generated_qpos)
+        for key in root.findall("./keyframe/key"):
+            existing = key.get("qpos", "").strip()
+            key.set("qpos", f"{existing} {suffix}".strip())
     @staticmethod
     def _discover_objects(root):
         """Discover task objects without treating robot internals as objects.
