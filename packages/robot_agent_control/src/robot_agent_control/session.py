@@ -38,13 +38,18 @@ class ControlSession:
         import time
         import mujoco.viewer
 
-        self._viewer_context = mujoco.viewer.launch_passive(self.runtime.model, self.runtime.data)
+        self._viewer_stop = threading.Event()
+        self._continue_event = threading.Event()
+
+        def on_key(keycode: int) -> None:
+            if keycode in {32, 257}:
+                self._continue_event.set()
+
+        self._viewer_context = mujoco.viewer.launch_passive(self.runtime.model, self.runtime.data, key_callback=on_key)
         self._viewer = self._viewer_context.__enter__()
         self.executor._configure_camera(self._viewer, self.runtime)
         self.runtime.runtime.attach_viewer(self._viewer)
         self._viewer.sync()
-        self._viewer_stop = threading.Event()
-
         def sync_loop() -> None:
             while self._viewer is not None and self._viewer.is_running() and not self._viewer_stop.is_set():
                 self._viewer.sync()
@@ -62,7 +67,7 @@ class ControlSession:
             self.runtime.runtime.attach_viewer(None)
         if self._viewer_context is not None:
             self._viewer_context.__exit__(None, None, None)
-        self._viewer_context = self._viewer = self._viewer_thread = self._viewer_stop = None
+        self._viewer_context = self._viewer = self._viewer_thread = self._viewer_stop = self._continue_event = None
 
     @staticmethod
     def _load(value: CommandDocument | str | Path) -> CommandDocument:
@@ -88,7 +93,7 @@ class ControlSession:
             pose_provider=self.runtime.pose_provider,
         )
         try:
-            viewer_state = (self._viewer, __import__("threading").Event()) if self._viewer is not None else None
+            viewer_state = (self._viewer, self._continue_event) if self._viewer is not None else None
             self.executor._run(document, self.registry, self.runtime, converter, reports, state, viewer_state, self.viewer_mode, trace_path)
         except Exception as exc:
             state["failure"] = ExecutionFailure(error_code=ErrorCode.INTERNAL_ERROR, error_message=str(exc), recoverable=False)
