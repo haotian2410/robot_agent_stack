@@ -450,6 +450,10 @@ class MujocoPushPullController:
         target_geoms = {geom_id for geom_id in range(self.model.ngeom)
                         if int(self.model.geom_bodyid[geom_id]) in moving_body_ids}
         handle_geom = self._handle_geom_id(object_id)
+        handle_contact_present = any(
+            self._is_allowed_handle_contact(int(self.data.contact[index].geom1), int(self.data.contact[index].geom2), handle_geom)
+            for index in range(self.data.ncon)
+        )
         forbidden: list[dict[str, Any]] = []
         for index in range(self.data.ncon):
             contact = self.data.contact[index]
@@ -463,6 +467,13 @@ class MujocoPushPullController:
                 continue
             body1 = int(self.model.geom_bodyid[geom1]); body2 = int(self.model.geom_bodyid[geom2])
             carried_body_ids = moving_body_ids - {target_body}
+            if target_body in {body1, body2} and handle_contact_present:
+                # The handle is mounted on the mechanism panel.  At the
+                # contact pose the tool may also touch that same panel while
+                # a valid pad/handle contact is maintained.  Treat the
+                # coupled panel contact as part of the mechanism contact;
+                # without a valid handle contact it remains forbidden.
+                continue
             if ({body1, body2} & carried_body_ids) and target_body in {body1, body2} and float(contact.dist) >= -0.001:
                 # A free payload may rest on the drawer tray while both move
                 # together. Small solver penetration is an intended support

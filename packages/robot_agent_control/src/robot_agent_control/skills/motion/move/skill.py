@@ -49,6 +49,7 @@ class MoveSkill:
         selection: Dict[str, Any] | None = None
         try:
             normalized = validate_move_request(request, self.config)
+            self.collision_checker.allowed_target_geom_ids = set()
             target_body_name = normalized.get("target_body_name")
             if target_body_name:
                 body_id = mujoco.mj_name2id(self.robot_runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(target_body_name))
@@ -57,6 +58,16 @@ class MoveSkill:
                         geom_id for geom_id in range(self.robot_runtime.model.ngeom)
                         if int(self.robot_runtime.model.geom_bodyid[geom_id]) == body_id
                     }
+            if not self.collision_checker.allowed_target_geom_ids:
+                target_geom_name = normalized.get("target_geom_name")
+                if target_geom_name:
+                    geom_id = mujoco.mj_name2id(
+                        self.robot_runtime.model,
+                        mujoco.mjtObj.mjOBJ_GEOM,
+                        str(target_geom_name),
+                    )
+                    if geom_id >= 0:
+                        self.collision_checker.allowed_target_geom_ids = {int(geom_id)}
             context = self._get_runtime_context(normalized)
             selection = self.selector.select(normalized, context)
             strategy = self.strategies[selection["path_strategy"]]

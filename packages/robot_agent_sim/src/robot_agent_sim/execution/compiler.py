@@ -11,7 +11,6 @@ from robot_agent_protocol import CommandDocument, ErrorCode, ExecutionBundle, Ex
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
 from .interaction_registry_builder import build_authored_registry
-from .execution_profile import load_execution_profile
 
 
 REGION_TO_ANCHOR = {
@@ -42,11 +41,8 @@ def compile_execution_bundle(
     )
     registry = json.loads(registry_output.read_text(encoding="utf-8"))
     objects = registry["objects"]
-    operations = {item.operation_id: item for item in grounded_task.operations}
-
     commands: list[SkillCommand] = []
     traces: list[dict[str, Any]] = []
-    profile = load_execution_profile()
 
     current_trace: dict[str, Any] | None = None
 
@@ -72,7 +68,6 @@ def compile_execution_bundle(
             "generated_commands": [],
         }
         traces.append(current_trace)
-        operation = operations[step.operation_id]
         target = step.target_object
         if step.skill_name == "search":
             raise ValueError(f"{ErrorCode.PERCEPTION_REQUIRED}: search must finish before execution")
@@ -114,34 +109,6 @@ def compile_execution_bundle(
             add(step.skill_name, target, step.step_id, **parameters)
         else:
             raise ValueError(f"{ErrorCode.UNSUPPORTED_SKILL}: {step.skill_name}")
-
-        # Execution micro-steps are deterministic profile macros. Numeric
-        # distances never come from the planner or model.
-        if step.skill_name == "grasp" and operation.task_type.value == "pick_and_place":
-            add(
-                "move",
-                "end_effector",
-                step.step_id,
-                relation=profile.lift_relation,
-                distance_m=profile.post_grasp_lift_m,
-                frame=profile.lift_frame,
-                planning_method="linear",
-            )
-            add("move", "home", step.step_id)
-        if step.skill_name == "release":
-            if operation.task_type.value == "pick_and_place":
-                add(
-                    "move",
-                    "end_effector",
-                    step.step_id,
-                    relation=profile.retreat_relation,
-                    distance_m=profile.post_release_retreat_m,
-                    frame=profile.retreat_frame,
-                    planning_method="linear",
-                )
-                add("move", "home", step.step_id)
-            elif operation.task_type.value in {"open", "close"}:
-                add("move", "home", step.step_id)
 
     fingerprint = scene_sha256(scene)
     command_document = CommandDocument(

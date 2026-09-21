@@ -145,16 +145,64 @@ def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
 
 def test_compiler_trace_records_semantic_anchor_mapping(tmp_path):
     task = cabinet_task()
+    plan = RecipePlanner().plan(task)
     bundle = compile_execution_bundle(
-        RecipePlanner().plan(task), task,
+        plan, task,
         scene_path="packages/robot_agent_control/world_model/robotsim/scene_001.xml",
         interaction_registry_path=SIDECAR,
         output_dir=tmp_path,
         route="B",
     )
     assert bundle.commands
+    commands = json.loads((tmp_path / "commands.json").read_text())["commands"]
     trace = json.loads((tmp_path / "compiled_step_trace.json").read_text())
-    assert len(trace) == len(RecipePlanner().plan(task).steps)
+    assert len(trace) == len(plan.steps)
+    assert len(commands) == len(plan.steps)
     step10 = next(item for item in trace if item["skill_step_id"] == "step-10")
     assert step10["resolved_anchor"] == "interior"
     assert any(item["parameters"].get("anchor") == "interior" for item in step10["generated_commands"])
+
+
+def test_compiler_preserves_one_command_per_semantic_skill(tmp_path):
+    task = GroundedTask(
+        instruction="put the red ball in the upper compartment",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="red_ball_01", semantic_name="red ball", object_id="red_ball", grounding_method="interaction_registry"),
+            GroundedEntity(entity_id="upper_compartment_01", semantic_name="upper compartment", object_id="blue_cabinet_upper_compartment", grounding_method="interaction_registry"),
+        ],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="red_ball_01", destination="upper_compartment_01")],
+        spatial_relations=[SpatialRelation(scope="goal", subject="red_ball_01", relation=SpatialRelationType.INSIDE, reference="upper_compartment_01")],
+        scene_id="scene_001",
+    )
+    plan = RecipePlanner().plan(task)
+    compile_execution_bundle(
+        plan, task,
+        scene_path="packages/robot_agent_control/world_model/robotsim/scene_001.xml",
+        interaction_registry_path=SIDECAR,
+        output_dir=tmp_path,
+        route="B",
+    )
+
+    commands = json.loads((tmp_path / "commands.json").read_text())["commands"]
+    trace = json.loads((tmp_path / "compiled_step_trace.json").read_text())
+    assert len(plan.steps) == len(commands) == len(trace) == 6
+    assert [command["skill_name"] for command in commands] == [step.skill_name for step in plan.steps]
+    assert all(len(item["generated_commands"]) == 1 for item in trace)
+    assert not any(command["parameters"].get("target") == "home" for command in commands)
+    assert not any(
+        command["parameters"].get("target") == "end_effector"
+        and command["parameters"].get("relation") in {"above", "behind"}
+        for command in commands
+    )
+
+    pick_grasp = next(item for item in trace if item["semantic_skill"] == "grasp")
+    assert [item["skill_name"] for item in pick_grasp["generated_commands"]] == ["grasp"]
+    assert pick_grasp["generated_commands"][0]["parameters"] == {"target": "red_ball"}
+
+    pick_release = next(item for item in trace if item["semantic_skill"] == "release")
+    assert [item["skill_name"] for item in pick_release["generated_commands"]] == ["release"]
+    assert pick_release["generated_commands"][0]["parameters"] == {
+        "target": "red_ball",
+        "reference": "blue_cabinet_upper_compartment",
+    }

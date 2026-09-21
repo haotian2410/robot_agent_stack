@@ -470,10 +470,8 @@ cd /tmp
 ```bash
 /tmp/robot-agent-wheel-test/bin/python - <<'PY'
 from robot_agent_control.robot_profile import RobotProfile
-from robot_agent_sim.execution.execution_profile import load_execution_profile
 
 print(RobotProfile.load_for_robot("ur5e"))
-print(load_execution_profile())
 PY
 ```
 
@@ -487,14 +485,6 @@ wheel 部署不要求保留 monorepo 根目录 `configs/`。
 
 ```text
 robot_agent_control package resource
-```
-
-安装。
-
-默认 ExecutionProfile 作为：
-
-```text
-robot_agent_sim package resource
 ```
 
 安装。
@@ -521,13 +511,9 @@ export ROBOT_AGENT_CONFIG_ROOT=/path/to/my-configs
 
 ```text
 /path/to/my-configs/
-├── robots/
-│   └── ur5e.json
-└── execution_profiles/
-    └── default.json
+└── robots/
+    └── ur5e.json
 ```
-
-可以只覆盖其中一类。
 
 没有对应 override 文件时继续使用 package 内置资源。
 
@@ -554,25 +540,11 @@ execution backend
 
 ---
 
-## 19. ExecutionProfile Deployment Notes
+## 19. Compiler Deployment Notes
 
-ExecutionProfile 控制 deterministic execution macros，例如：
-
-```text
-post-grasp lift
-post-release retreat
-frame
-relation
-```
-
-当前 frame 只支持：
-
-```text
-world
-tool
-```
-
-不要在 override 中使用 `object_local`，除非代码后续明确增加该 runtime 支持。
+Compiler 保持 semantic Skill 与 command 一对一，不使用单独的 execution
+profile，也不会在 `grasp` / `release` 后隐式追加 lift、retreat 或 home。
+运动 command 在 Control 中以当前 MuJoCo 运行时状态为规划起点。
 
 ---
 

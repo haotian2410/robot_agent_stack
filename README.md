@@ -263,7 +263,7 @@ locate(source)
 → release(source)
 ```
 
-Compiler 还会根据 ExecutionProfile 添加确定性的 execution micro-steps，例如 post-grasp lift、home、post-release retreat。数值不由 LLM 输出。
+Compiler 对每个语义 Skill 只生成一条同名 command，不会在 `grasp` / `release` 后隐式插入 lift、retreat 或 home。显式语义 `move` 仍由 InteractionRegistry anchor 和 Control 当前运行时状态求解。
 
 ---
 
@@ -757,7 +757,7 @@ Interaction metadata 可以包含：
 
 ---
 
-## 15. RobotProfile 与 ExecutionProfile
+## 15. RobotProfile
 
 ### RobotProfile
 
@@ -773,17 +773,6 @@ UR5e 内置 profile 随 `robot_agent_control` package 安装，用于描述：
 
 Control preflight 会先在 raw MuJoCo model 上验证 RobotProfile，再初始化 SkillRuntime。
 
-### ExecutionProfile
-
-默认 execution profile 随 `robot_agent_sim` package 安装，用于确定性 execution macros，例如：
-
-- post-grasp lift distance
-- lift relation/frame
-- post-release retreat distance
-- retreat relation/frame
-
-这些参数不由 Qwen 输出。
-
 ### 用户 override
 
 可以设置：
@@ -796,10 +785,8 @@ export ROBOT_AGENT_CONFIG_ROOT=/path/to/configs
 
 ```text
 /path/to/configs/
-├── robots/
-│   └── ur5e.json
-└── execution_profiles/
-    └── default.json
+└── robots/
+    └── ur5e.json
 ```
 
 没有 override 时使用随 wheel/package 安装的内置资源。
@@ -948,7 +935,7 @@ interaction_registry
 
 - [Architecture](docs/architecture.md)：模块边界、Route A/B、协议、Compiler、ControlRuntime、GL 边界和错误传播。
 - [Deployment](docs/deployment.md)：从新机器安装、Qwen、headless、GUI、wheel、配置 override 到 smoke test。
-- [Config overrides](configs/README.md)：RobotProfile / ExecutionProfile override 目录规则。
+- [Config overrides](configs/README.md)：RobotProfile override 目录规则。
 
 ---
 

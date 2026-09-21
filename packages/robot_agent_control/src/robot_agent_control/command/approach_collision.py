@@ -401,6 +401,13 @@ class MujocoApproachCollisionChecker:
     def _target_geom_ids(self, object_key: str) -> set[int]:
         obj = self.registry.objects[object_key]
         source = obj.get("spatial", {}).get("source", {})
+        object_id = obj.get("object_id")
+        if isinstance(object_id, str):
+            geom_id = mujoco.mj_name2id(
+                self.runtime.model, mujoco.mjtObj.mjOBJ_GEOM, object_id
+            )
+            if geom_id >= 0:
+                return {int(geom_id)}
         body_name = obj.get("body_name")
         body_id = -1
         if body_name:

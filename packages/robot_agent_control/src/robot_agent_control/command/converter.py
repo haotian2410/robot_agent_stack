@@ -164,6 +164,13 @@ class SkillCommandConverter:
         else:
             object_key, _, _ = self._resolve_target(target_id, index)
             request = {"target": self._object_pose(target_id, parameters, index)}
+            target_object = self.objects[object_key]
+            object_id = target_object.get("object_id")
+            if isinstance(object_id, str) and object_id:
+                request["target_geom_name"] = object_id
+            body_name = target_object.get("body_name")
+            if isinstance(body_name, str) and body_name:
+                request["target_body_name"] = body_name
             default_path_type = "joint"
 
         path_type = parameters.get("path_type", parameters.get("planning_method", default_path_type))

@@ -154,7 +154,7 @@ LLM 不负责：
 - gripper actuator command
 - cabinet hinge axis
 - push/pull physical trajectory
-- post-grasp lift distance
+- implicit post-grasp/post-release motion
 
 这些内容来自：
 
@@ -164,8 +164,6 @@ Scene
 InteractionRegistry
 +
 RobotProfile
-+
-ExecutionProfile
 +
 Control algorithms
 ```
@@ -573,25 +571,12 @@ release(handle)
 
 ---
 
-## 10. Semantic Step vs Execution Micro-Step
+## 10. Semantic Step vs Execution Step
 
-一个 SkillPlan step 不一定等于一个 runtime step。
-
-例如：
-
-```text
-SkillPlan:
-grasp(red_ball)
-```
-
-Compiler 可以在 pick-and-place 中追加：
-
-```text
-move end_effector above by profile distance
-move home
-```
-
-Control converter 还可能将一个 move command 展开成多个实际 runtime steps。
+Compiler 保持一个 SkillPlan step 对应一个同名 command；它不会为
+`grasp` / `release` 追加固定 lift、retreat 或 home。Control converter 仍可能
+将一个 `move` command 展开成多个实际 runtime steps（例如 approach/contact），
+但这些步骤由当前状态和碰撞规划器决定。
 
 因此 trace 关系是：
 
@@ -618,7 +603,6 @@ SkillPlan
 GroundedTask
 scene.xml
 InteractionRegistry
-ExecutionProfile
 robot
 ```
 
@@ -638,7 +622,7 @@ Compiler 负责：
 - `button_surface → button_surface`
 - 生成 command id；
 - 保留 `source_skill_step_id`；
-- 添加 deterministic execution macros；
+- 保持一条 semantic Skill 对应一条同名 command；
 - 写 scene fingerprint；
 - 生成 absolute paths。
 
@@ -675,37 +659,12 @@ Compiler 直接失败。
 
 ---
 
-## 12. ExecutionProfile
+## 12. Compiler 语义边界
 
-ExecutionProfile 是 sim-side deterministic execution macro 配置。
-
-当前包括：
-
-```text
-post_grasp_lift_m
-lift_relation
-lift_frame
-post_release_retreat_m
-retreat_relation
-retreat_frame
-```
-
-合法 frame 当前限定：
-
-```text
-world
-tool
-```
-
-默认 profile 作为 package resource 随 wheel 安装。
-
-用户可以通过：
-
-```bash
-ROBOT_AGENT_CONFIG_ROOT
-```
-
-override。
+Compiler 不在 `grasp` 或 `release` 后生成隐藏的 lift、retreat、home 动作。
+每个 SkillPlan step 对应一条同名 command；`grasp` trace 只包含 `grasp`，
+`release` trace 只包含 `release`。后续显式 `move` 从 Control 的当前运行时
+关节状态开始规划，而不是从 home 重新开始。
 
 ---
 
@@ -1206,7 +1165,6 @@ config_001.commands.json
 CI 构建三个 wheel，并在 clean venv、`/tmp` cwd 中验证：
 
 - RobotProfile package resource
-- ExecutionProfile package resource
 - `robot-agent`
 - `robot-agent-control`
 

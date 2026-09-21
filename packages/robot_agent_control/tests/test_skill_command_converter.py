@@ -124,6 +124,8 @@ class SkillCommandConverterTest(unittest.TestCase):
             {"skill_name": "move", "parameters": {"target": "blue_cabinet_handle"}}
         )
         self.assertEqual(step["request"]["target"]["position"], {"x": 1.0, "y": 2.0, "z": 3.0})
+        self.assertEqual(step["request"]["target_geom_name"], "blue_cabinet_handle")
+        self.assertEqual(step["request"]["target_body_name"], "blue_cabinet_door")
 
     def test_pose_provider_accepts_array_like_values(self) -> None:
         class ArrayLike:
