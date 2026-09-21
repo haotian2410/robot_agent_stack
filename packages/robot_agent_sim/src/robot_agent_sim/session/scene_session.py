@@ -91,6 +91,7 @@ class SceneSession:
             planner=self.planner,
             world_positions={object_id: state.position for object_id, state in self.world_state.objects.items()} if self.world_state else None,
             live_observation=live_observation,
+            semantic_map=self.semantic_map.model_dump(mode="json"),
         )
         if result.status != "accepted":
             self._record_dialogue(instruction)
@@ -116,6 +117,7 @@ class SceneSession:
         (self.output_root / "state" / "world_state.json").write_text(self.world_state.model_dump_json(indent=2), encoding="utf-8")
         (self.output_root / "state" / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
         self._record_dialogue(instruction, result)
+        self._learn_semantics(result)
         self.execution_history.append({"turn": self.turn_index, "instruction": instruction, "report": control_response.get("report", {})})
         self._write_session()
         return {"status": "accepted", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version, "result": result.model_dump(mode="json"), "report": control_response.get("report"), "world_state": self.world_state.model_dump(mode="json")}
@@ -284,6 +286,21 @@ class SceneSession:
                 self.dialogue_state.referents.update({"它": object_id, "这个": object_id, "刚才那个": object_id})
         (self.output_root / "state").mkdir(parents=True, exist_ok=True)
         (self.output_root / "state" / "dialogue_state.json").write_text(self.dialogue_state.model_dump_json(indent=2), encoding="utf-8")
+
+    def _learn_semantics(self, result: PipelineResult) -> None:
+        for entity in (result.grounded_task or {}).get("entities", []):
+            object_id = entity["object_id"]
+            current = self.semantic_map.objects.get(object_id)
+            if current is None:
+                current = SemanticObject(object_id=object_id, labels=[entity["semantic_name"]], source="vision", confidence=entity.get("bbox_iou"))
+                self.semantic_map.objects[object_id] = current
+            elif entity.get("semantic_name") and entity["semantic_name"] not in current.labels:
+                current.labels.append(entity["semantic_name"])
+            if entity.get("grounding_method") == "vlm_iou":
+                current.source = "vision"
+        state_dir = self.output_root / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
 
     def _resolve_dialogue_instruction(self, instruction: str) -> str:
         object_id = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")

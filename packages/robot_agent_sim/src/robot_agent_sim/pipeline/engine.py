@@ -52,7 +52,7 @@ class PipelineEngine:
         self.assets = asset_registry or AssetRegistry()
         self.backend = MujocoSceneBackend()
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -133,37 +133,46 @@ class PipelineEngine:
                             authored_grounded.append(GroundedEntity(entity_id=candidate.entity_id, semantic_name=next(entity.semantic_name for entity in missing_entities if entity.entity_id == candidate.entity_id), object_id=object_id, body_name=instance.body_name, grounding_method="vlm_iou", detection_bbox=candidate.bbox, instance_bbox=instance.bbox, bbox_iou=score))
                     grounded = authored_grounded
                 else:
-                    selection_entities = {
-                    value for relation in intent.spatial_relations if relation.scope == "selection"
-                    for value in (relation.subject, relation.reference) if value
-                    }
-                    queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=entity.entity_id in selection_entities) for entity in intent.entities]
-                    budget.consume("vision_grounding")
-                    detection = self.vision.detect(VisionGroundingRequest(entities=queries, rgb_path=str(observation.rgb_path)))
-                    self._capture(budget, "vision_grounding", self.vision)
-                    truth = [{"object_id": item.object_id, "bbox": item.bbox} for item in observation.instances if item.bbox is not None]
-                    expected = {entity.entity_id for entity in intent.entities}
-                    relevant = [item for item in detection.detections if item.entity_id in expected]
-                    for index, item in enumerate(relevant, 1):
-                        if item.detection_id is None:
-                            item.detection_id = f"d-{index}"
-                    matches, unmatched, ambiguous = match_detections(relevant, truth)
-                    visual_grounding = {"detections": [item.model_dump(mode="json") for item in detection.detections], "truth": truth, "matches": [{"detection_id": detection_id, "object_id": object_id, "iou": score} for detection_id, object_id, score in matches], "unmatched": unmatched, "ambiguous": ambiguous, "minimum_iou": 0.2, "ambiguity_margin": 0.05}
-                    if unmatched or ambiguous:
-                        result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), visual_grounding=visual_grounding, status="grounding_ambiguous" if ambiguous else "grounding_failed", model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=f"unmatched={unmatched}; ambiguous={ambiguous}", source_scene=str(Path(scene).resolve()))
-                        self._add_observation_artifacts(result.artifacts, observation); return self._write_result(result, out)
-                    instance_by_id = {item.object_id: item for item in observation.instances}
-                    positions = {item.object_id: item.world_position for item in observation.instances}
-                    candidate_map = {entity.entity_id: [] for entity in intent.entities}
-                    for detection_id, object_id, score in matches:
-                        candidate = next(item for item in relevant if item.detection_id == detection_id)
-                        candidate_map[candidate.entity_id].append({"object_id": object_id, "detection_bbox": tuple(candidate.bbox), "instance_bbox": instance_by_id[object_id].bbox, "bbox_iou": score})
-                    selected = WorldRelationResolver().resolve(intent, candidate_map, positions)
-                    grounded = []
-                    for entity in intent.entities:
-                        choice = selected[entity.entity_id]; instance = instance_by_id[choice["object_id"]]
-                        grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=choice["object_id"], body_name=instance.body_name, grounding_method="vlm_iou", detection_bbox=choice["detection_bbox"], instance_bbox=choice["instance_bbox"], bbox_iou=choice["bbox_iou"]))
-                    asset_bindings = {}
+                    cached_candidates = _semantic_cache_candidates(intent.entities, semantic_map, registry)
+                    current_positions = world_positions or {item.object_id: item.world_position for item in observation.instances}
+                    if cached_candidates and all(len(values) > 0 for values in cached_candidates.values()):
+                        selected = WorldRelationResolver().resolve(intent, cached_candidates, current_positions)
+                        instance_by_id = {item.object_id: item for item in observation.instances}
+                        grounded = [GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=selected[entity.entity_id]["object_id"], body_name=instance_by_id[selected[entity.entity_id]["object_id"]].body_name, grounding_method="semantic_cache", instance_bbox=instance_by_id[selected[entity.entity_id]["object_id"]].bbox) for entity in intent.entities]
+                        visual_grounding = {"method": "semantic_cache", "vision_used": False}
+                        asset_bindings = {}
+                    else:
+                        selection_entities = {
+                        value for relation in intent.spatial_relations if relation.scope == "selection"
+                        for value in (relation.subject, relation.reference) if value
+                        }
+                        queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=entity.entity_id in selection_entities) for entity in intent.entities]
+                        budget.consume("vision_grounding")
+                        detection = self.vision.detect(VisionGroundingRequest(entities=queries, rgb_path=str(observation.rgb_path)))
+                        self._capture(budget, "vision_grounding", self.vision)
+                        truth = [{"object_id": item.object_id, "bbox": item.bbox} for item in observation.instances if item.bbox is not None]
+                        expected = {entity.entity_id for entity in intent.entities}
+                        relevant = [item for item in detection.detections if item.entity_id in expected]
+                        for index, item in enumerate(relevant, 1):
+                            if item.detection_id is None:
+                                item.detection_id = f"d-{index}"
+                        matches, unmatched, ambiguous = match_detections(relevant, truth)
+                        visual_grounding = {"detections": [item.model_dump(mode="json") for item in detection.detections], "truth": truth, "matches": [{"detection_id": detection_id, "object_id": object_id, "iou": score} for detection_id, object_id, score in matches], "unmatched": unmatched, "ambiguous": ambiguous, "minimum_iou": 0.2, "ambiguity_margin": 0.05}
+                        if unmatched or ambiguous:
+                            result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), visual_grounding=visual_grounding, status="grounding_ambiguous" if ambiguous else "grounding_failed", model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=f"unmatched={unmatched}; ambiguous={ambiguous}", source_scene=str(Path(scene).resolve()))
+                            self._add_observation_artifacts(result.artifacts, observation); return self._write_result(result, out)
+                        instance_by_id = {item.object_id: item for item in observation.instances}
+                        positions = {item.object_id: item.world_position for item in observation.instances}
+                        candidate_map = {entity.entity_id: [] for entity in intent.entities}
+                        for detection_id, object_id, score in matches:
+                            candidate = next(item for item in relevant if item.detection_id == detection_id)
+                            candidate_map[candidate.entity_id].append({"object_id": object_id, "detection_bbox": tuple(candidate.bbox), "instance_bbox": instance_by_id[object_id].bbox, "bbox_iou": score})
+                        selected = WorldRelationResolver().resolve(intent, candidate_map, positions)
+                        grounded = []
+                        for entity in intent.entities:
+                            choice = selected[entity.entity_id]; instance = instance_by_id[choice["object_id"]]
+                            grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=choice["object_id"], body_name=instance.body_name, grounding_method="vlm_iou", detection_bbox=choice["detection_bbox"], instance_bbox=choice["instance_bbox"], bbox_iou=choice["bbox_iou"]))
+                        asset_bindings = {}
 
             task = GroundedTask(instruction=intent.instruction, task_types=intent.task_types, entities=grounded, operations=intent.operations, spatial_relations=intent.spatial_relations, scene_id=registry.scene_id)
             recipe_supported = RecipePlanner.supports(task)
@@ -268,3 +277,24 @@ class PipelineEngine:
     @staticmethod
     def _add_observation_artifacts(artifacts, observation):
         for name, path in {"rgb.png": observation.rgb_path, "segmentation.npy": observation.segmentation_path, "segmentation.png": observation.segmentation_visualization_path, "instances.json": observation.instance_index_path}.items(): artifacts[name] = str(path)
+
+
+def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, registry) -> dict[str, list[dict[str, str]]]:
+    if not semantic_map:
+        return {}
+    objects = semantic_map.get("objects", semantic_map)
+    available = {item.object_id for item in registry.objects}
+    result: dict[str, list[dict[str, str]]] = {}
+    for entity in entities:
+        query = {str(entity.semantic_name).casefold(), *(str(alias).casefold() for alias in entity.aliases)}
+        matches = []
+        for object_id, value in objects.items():
+            if object_id not in available:
+                continue
+            labels = {str(object_id).casefold(), *(str(label).casefold() for label in value.get("labels", []))}
+            if any(token and (token in label or label in token) for token in query for label in labels):
+                matches.append({"object_id": object_id})
+        if not matches:
+            return {}
+        result[entity.entity_id] = matches
+    return result

@@ -115,6 +115,27 @@ def test_route_b_default_fake_detection_fails_without_forcing_binding(tmp_path):
     assert "rgb.png" in result.artifacts
 
 
+def test_route_b_semantic_cache_skips_second_vision_call(tmp_path):
+    class CountingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([VisionDetection(entity_id="button_01", bbox=[710, 412, 867, 525])])
+            self.calls_count = 0
+
+        def detect(self, request):
+            self.calls_count += 1
+            return super().detect(request)
+
+    vision = CountingVision()
+    engine = PipelineEngine(vision=vision)
+    first = engine.plan("按按钮", robot="ur5e", scene=SCENE_003, output_dir=tmp_path / "first")
+    assert first.status == "accepted"
+    semantic_map = {"objects": {"scene_object_001": {"labels": ["button", "按钮"]}}}
+    second = engine.plan("按按钮", robot="ur5e", scene=SCENE_003, output_dir=tmp_path / "second", semantic_map=semantic_map)
+    assert second.status == "accepted"
+    assert second.visual_grounding["method"] == "semantic_cache"
+    assert vision.calls_count == 1
+
+
 def test_qwen_provider_sends_fixed_stage_and_extracts_json(monkeypatch, tmp_path):
     calls = []
 
