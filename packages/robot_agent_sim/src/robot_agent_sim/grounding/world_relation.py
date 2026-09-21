@@ -66,7 +66,16 @@ class WorldRelationResolver:
                         unary_axes = [axis_sign_map.get(item.relation) for item in relations]
                         if any(item is None for item in unary_axes):
                             raise WorldRelationError(f"unsupported compound selection relations: {relations}")
-                        result = min(values, key=lambda value: sum(
+                        satisfying = [value for value in values if all(
+                            positions[value["object_id"]][item_axis] * item_sign < 0
+                            for item_axis, item_sign in unary_axes
+                        )]
+                        if not satisfying:
+                            raise RelationNotSatisfied(f"relation_not_satisfied: {entity_id}")
+                        if len(satisfying) == 1:
+                            result = satisfying[0]
+                            resolving.remove(entity_id); selected[entity_id] = result; return result
+                        result = min(satisfying, key=lambda value: sum(
                             item_sign * positions[value["object_id"]][item_axis]
                             for item_axis, item_sign in unary_axes
                         ))

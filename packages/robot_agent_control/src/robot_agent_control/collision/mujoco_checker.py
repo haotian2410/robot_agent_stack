@@ -66,6 +66,13 @@ class MujocoCollisionChecker:
             geom1, geom2 = int(contact.geom1), int(contact.geom2)
             if geom1 not in active_robot_geom_ids and geom2 not in active_robot_geom_ids:
                 continue
+            # During a move into a declared container, the payload is allowed
+            # to pass through other contents of that container.  The arm and
+            # gripper remain subject to normal collision checks; this exception
+            # applies only when one side is the currently held object and the
+            # request explicitly supplied a target body/geom allow-list.
+            if allowed_geom_ids and held_geom_ids and (geom1 in held_geom_ids or geom2 in held_geom_ids):
+                continue
             if allowed_geom_ids and (geom1 in allowed_geom_ids or geom2 in allowed_geom_ids):
                 continue
             if self._is_held_object_pad_contact(geom1, geom2, held_geom_ids):

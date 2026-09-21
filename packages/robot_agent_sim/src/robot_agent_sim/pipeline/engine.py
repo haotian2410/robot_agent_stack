@@ -11,7 +11,8 @@ from ..backends.mujoco.backend import MujocoSceneBackend
 from ..contracts.grounded_task import GroundedEntity, GroundedTask
 from ..contracts.task_intent import TaskStatus
 from ..grounding.iou import match_detections
-from ..grounding.interaction_registry import ground_with_interaction_registry
+from ..grounding.segmentation import SceneObservation
+from ..grounding.interaction_registry import ground_partial_with_interaction_registry, ground_with_interaction_registry
 from ..grounding.world_relation import WorldRelationResolver
 from ..execution.interaction_registry_builder import build_generated_registry
 from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded
@@ -51,7 +52,7 @@ class PipelineEngine:
         self.assets = asset_registry or AssetRegistry()
         self.backend = MujocoSceneBackend()
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -86,16 +87,51 @@ class PipelineEngine:
                 asset_bindings = {entity.entity_id: {"model_id": assets[entity.entity_id].model_id, "model_name": assets[entity.entity_id].model_name} for entity in intent.entities}
             else:
                 registry = self.backend.load_uploaded(Path(scene), robot)
-                observation = self.backend.renderer.render(Path(scene), registry, out)
+                observation = live_observation or self.backend.renderer.render(Path(scene), registry, out)
                 if interaction_registry is not None:
-                    grounded = ground_with_interaction_registry(
-                        intent.entities, interaction_registry, scene
+                    authored_grounded, missing_entities = ground_partial_with_interaction_registry(
+                        intent.entities,
+                        interaction_registry,
+                        scene,
+                        intent=intent,
+                        positions=world_positions or {item.object_id: item.world_position for item in observation.instances},
                     )
                     visual_grounding = {
                         "method": "interaction_registry",
                         "registry": str(Path(interaction_registry).resolve()),
                     }
                     asset_bindings = {}
+                    if missing_entities:
+                        # Keep authored interaction semantics for known objects;
+                        # only unresolved entities consume the vision budget.
+                        queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=True) for entity in missing_entities]
+                        budget.consume("vision_grounding")
+                        detection = self.vision.detect(VisionGroundingRequest(entities=queries, rgb_path=str(observation.rgb_path)))
+                        self._capture(budget, "vision_grounding", self.vision)
+                        truth = [{"object_id": item.object_id, "bbox": item.bbox} for item in observation.instances if item.bbox is not None]
+                        relevant = [item for item in detection.detections if item.entity_id in {entity.entity_id for entity in missing_entities}]
+                        for index, item in enumerate(relevant, 1):
+                            if item.detection_id is None:
+                                item.detection_id = f"d-{index}"
+                        matches, unmatched, ambiguous = match_detections(relevant, truth)
+                        visual_grounding.update({
+                            "fallback_entities": [entity.entity_id for entity in missing_entities],
+                            "detections": [item.model_dump(mode="json") for item in detection.detections],
+                            "truth": truth,
+                            "matches": [{"detection_id": detection_id, "object_id": object_id, "iou": score} for detection_id, object_id, score in matches],
+                            "unmatched": unmatched,
+                            "ambiguous": ambiguous,
+                        })
+                        if unmatched or ambiguous:
+                            result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), visual_grounding=visual_grounding, status="grounding_ambiguous" if ambiguous else "grounding_failed", model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=f"unmatched={unmatched}; ambiguous={ambiguous}", source_scene=str(Path(scene).resolve()))
+                            self._add_observation_artifacts(result.artifacts, observation)
+                            return self._write_result(result, out)
+                        instance_by_id = {item.object_id: item for item in observation.instances}
+                        for detection_id, object_id, score in matches:
+                            candidate = next(item for item in relevant if item.detection_id == detection_id)
+                            instance = instance_by_id[object_id]
+                            authored_grounded.append(GroundedEntity(entity_id=candidate.entity_id, semantic_name=next(entity.semantic_name for entity in missing_entities if entity.entity_id == candidate.entity_id), object_id=object_id, body_name=instance.body_name, grounding_method="vlm_iou", detection_bbox=candidate.bbox, instance_bbox=instance.bbox, bbox_iou=score))
+                    grounded = authored_grounded
                 else:
                     selection_entities = {
                     value for relation in intent.spatial_relations if relation.scope == "selection"

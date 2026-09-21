@@ -10,6 +10,8 @@ from robot_agent_sim.models.qwen_http import QwenHTTPProvider
 from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest
 from robot_agent_sim.models.vision_grounding import VisionDetection
 from robot_agent_sim.pipeline.engine import PipelineEngine
+from robot_agent_sim.grounding.interaction_registry import ground_partial_with_interaction_registry
+from robot_agent_sim.contracts.task_intent import TaskEntity
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
 from robot_agent_sim.contracts.task_intent import Operation, TaskType
 
@@ -65,6 +67,44 @@ def test_route_b_sidecar_takes_precedence(tmp_path):
     assert registry.robot == "ur5e"
     assert registry.objects[0].object_id == "button-semantic"
     assert registry.objects[0].semantic_name == "red button"
+
+
+def test_route_b_partial_sidecar_merges_undeclared_bodies(tmp_path):
+    scene = tmp_path / "partial.xml"
+    scene.write_text(
+        """<mujoco><worldbody><body name="body_a"><geom type="sphere" size="0.02"/></body><body name="body_b"><geom type="sphere" size="0.02"/></body></worldbody></mujoco>""",
+        encoding="utf-8",
+    )
+    scene.with_name("partial.scene_registry.json").write_text(json.dumps({
+        "scene_id": "partial",
+        "robot": "ur5e",
+        "objects": [{"object_id": "red_ball", "body_name": "body_a", "semantic_name": "red ball", "role": "target"}],
+    }), encoding="utf-8")
+    registry = MujocoSceneBackend().load_uploaded(scene, "ur5e")
+    by_body = {item.body_name: item for item in registry.objects}
+    assert by_body["body_a"].object_id == "red_ball"
+    assert by_body["body_a"].semantic_name == "red ball"
+    assert by_body["body_b"].object_id.startswith("scene_object_")
+
+
+def test_partial_interaction_registry_returns_known_and_unresolved_entities(tmp_path):
+    registry = tmp_path / "partial.interactions.json"
+    registry.write_text(json.dumps({
+        "objects": {
+            "red_ball": {
+                "aliases": ["red ball", "红球"],
+                "body_name": "push_button_base",
+                "spatial": {"source": {"type": "body", "name": "push_button_base"}},
+            }
+        }
+    }), encoding="utf-8")
+    entities = [
+        TaskEntity(entity_id="red_ball", semantic_name="red ball", category="ball"),
+        TaskEntity(entity_id="blue_box", semantic_name="blue box", category="container"),
+    ]
+    known, missing = ground_partial_with_interaction_registry(entities, registry, SCENE_003)
+    assert [item.object_id for item in known] == ["red_ball"]
+    assert [item.entity_id for item in missing] == ["blue_box"]
 
 
 def test_route_b_default_fake_detection_fails_without_forcing_binding(tmp_path):

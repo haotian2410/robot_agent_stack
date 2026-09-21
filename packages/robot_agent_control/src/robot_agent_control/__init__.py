@@ -14,10 +14,12 @@ from .contracts import (
     load_command_document,
 )
 from .executor import ControlExecutor
+from .session import ControlSession
 
 __all__ = [
     "CommandDocument",
     "ControlExecutor",
+    "ControlSession",
     "ExecutionFailure",
     "ExecutionOptions",
     "ExecutionReport",

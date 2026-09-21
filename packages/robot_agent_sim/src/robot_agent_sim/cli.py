@@ -241,6 +241,59 @@ def run(
     _execute_subprocess(Path(bundle.task_dir) / "execution_bundle.json", viewer_mode)
 
 
+@app.command()
+def chat(
+    robot: Annotated[Robot, typer.Option(help="机械臂类型。")]=Robot.UR5E,
+    scene: Annotated[Path | None, typer.Option(exists=True, file_okay=True, readable=True, help="上传场景；省略则在第一轮由 Route A 创建。")]=None,
+    interaction_registry: Annotated[Path | None, typer.Option(exists=True, file_okay=True, readable=True, help="Route B 交互元数据。")]=None,
+    output_dir: Annotated[Path, typer.Option(file_okay=False, dir_okay=True, help="session artifact 根目录。")]=Path("var/sessions"),
+    provider: Annotated[Provider, typer.Option(help="fake 或 qwen。")]=Provider.FAKE,
+    planner: Annotated[PlannerMode, typer.Option(help="recipe、qwen 或 auto。")]=PlannerMode.RECIPE,
+    structured_output: Annotated[StructuredOutputMode, typer.Option(help="Qwen 结构化输出模式。")]=StructuredOutputMode.JSON_SCHEMA,
+    qwen_base_url: Annotated[str | None, typer.Option()]=None,
+    qwen_model: Annotated[str | None, typer.Option()]=None,
+    viewer_mode: Annotated[ViewerMode, typer.Option(help="session viewer 模式：auto、step 或 headless。")]=ViewerMode.HEADLESS,
+):
+    """打开一个持久 SceneSession，通过多轮输入复用同一 MuJoCo runtime。"""
+    _configure_planning_gl()
+    from .session import SceneSession
+    session = SceneSession(
+        robot=robot.value,
+        scene=scene,
+        interaction_registry=interaction_registry,
+        output_root=output_dir,
+        engine=_new_engine(provider, structured_output, qwen_base_url, qwen_model),
+        planner=planner.value,
+        viewer_mode=viewer_mode.value,
+    )
+    typer.echo(f"Scene session started: {session.session_id}")
+    typer.echo("输入任务，或输入 /exit 退出。")
+    try:
+        while True:
+            try:
+                instruction = typer.prompt(">", prompt_suffix=" ")
+            except (EOFError, KeyboardInterrupt, typer.Abort):
+                break
+            if instruction.strip().lower() in {"/exit", "/quit"}:
+                break
+            try:
+                outcome = session.run_turn(instruction)
+                if outcome.get("status") == "accepted":
+                    report = outcome.get("report") or {}
+                    typer.echo(f"执行{'成功' if report.get('success') else '失败'}。Turn {outcome['turn']} / Scene v{outcome['scene_version']} / World v{outcome['world_version']}")
+                elif outcome.get("status") == "scene_updated":
+                    patch = outcome["patch"]
+                    typer.echo(f"场景更新成功：{patch['operation']} {patch['object_id']}。Turn {outcome['turn']} / Scene v{outcome['scene_version']} / World v{outcome['world_version']}")
+                elif outcome.get("status") == "query_answer":
+                    typer.echo(f"{outcome['answer']} Turn {outcome['turn']} / Scene v{outcome['scene_version']} / World v{outcome['world_version']}")
+                else:
+                    typer.echo(f"任务未执行：{outcome.get('status')}：{outcome.get('error')}", err=True)
+            except Exception as exc:
+                typer.echo(f"Session turn failed: {exc}", err=True)
+    finally:
+        session.close()
+
+
 def _print_summary(result) -> None:
     intent = getattr(result, "task_intent", None) or {}
     grounded = getattr(result, "grounded_task", None) or {}

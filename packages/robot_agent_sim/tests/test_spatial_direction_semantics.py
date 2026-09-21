@@ -2,7 +2,13 @@ from pathlib import Path
 import pytest
 
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
-from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest, enrich_task
+from robot_agent_sim.models.task_understanding import (
+    ParseEntity,
+    ParseOperation,
+    TaskParseLLMOutput,
+    TaskUnderstandingRequest,
+    enrich_task,
+)
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.contracts.task_intent import SpatialRelationType, TaskStatus, TaskType
 from robot_agent_sim.models.prompts import TASK_UNDERSTANDING_PROMPT
@@ -21,6 +27,48 @@ def test_motion_direction_is_kept_separate_from_selection():
     assert parsed.status == "accepted"
     assert intent.raw_direction == "right"
     assert intent.spatial_relations == []
+
+
+def test_explicit_displacement_repairs_incomplete_model_grasp_parse():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[ParseEntity(id="apple_01", name="apple", category="fruit")],
+        operations=[ParseOperation(type="grasp", target="apple_01")],
+    )
+
+    intent = enrich_task(parsed, "把苹果往右移动一点")
+
+    assert intent.raw_direction == "right"
+    assert intent.operations[0].task_type == TaskType.MOVE
+    assert intent.operations[0].target == "apple_01"
+    assert intent.operations[0].motion_direction == "right"
+    assert intent.operations[0].distance_m == 0.10
+
+
+def test_explicit_displacement_recovers_metric_distance():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[ParseEntity(id="apple_01", name="apple", category="fruit")],
+        operations=[ParseOperation(type="move", target="apple_01")],
+    )
+
+    intent = enrich_task(parsed, "把苹果向左移动5厘米")
+
+    assert intent.operations[0].motion_direction == "left"
+    assert intent.operations[0].distance_m == pytest.approx(0.05)
+
+
+def test_right_side_selector_does_not_become_motion():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[ParseEntity(id="apple_01", name="apple", category="fruit")],
+        operations=[ParseOperation(type="grasp", target="apple_01")],
+    )
+
+    intent = enrich_task(parsed, "抓住右边的苹果")
+
+    assert intent.raw_direction is None
+    assert intent.operations[0].task_type == TaskType.GRASP
 
 
 def test_compound_motion_direction_still_requests_clarification():

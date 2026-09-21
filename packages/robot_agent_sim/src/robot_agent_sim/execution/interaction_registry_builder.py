@@ -176,14 +176,18 @@ def build_generated_registry(
                 },
             })
             expected_width = min(float(dimensions[0]), float(dimensions[1]))
+            target_request = {"type": "object", "object_id": item.object_id}
+            if max(float(dimensions[0]), float(dimensions[1])) / max(expected_width, 1e-6) <= 2.5:
+                # For compact objects the bbox width is useful verification
+                # evidence.  Elongated/irregular meshes (for example a
+                # banana) may be grasped across a local cross-section that is
+                # much narrower than the axis-aligned bbox, so enforcing the
+                # global width would reject valid pad contact.
+                target_request["expected_width"] = expected_width
             common["default_interactions"] = {"grasp": "grasp"}
             common["action_requests"] = {
                 "grasp": {
-                    "target": {
-                        "type": "object",
-                        "object_id": item.object_id,
-                        "expected_width": expected_width,
-                    },
+                    "target": target_request,
                     "grasp": {
                         "strategy": "auto",
                         "operation": "regrasp",

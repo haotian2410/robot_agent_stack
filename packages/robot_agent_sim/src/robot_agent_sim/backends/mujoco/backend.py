@@ -15,6 +15,18 @@ class MujocoSceneBackend:
         if sidecar.is_file():
             declared = UploadedSceneRegistry.model_validate_json(sidecar.read_text(encoding="utf-8"))
             objects = [SceneObject(object_id=x.object_id, body_name=x.body_name, role=x.role, semantic_name=x.semantic_name or x.body_name, model_id=x.model_id, model_name=x.model_name, position=x.position, dimensions_m=x.dimensions_m, source="uploaded", expected_visible=x.expected_visible) for x in declared.objects]
+            declared_bodies = {item.body_name for item in objects}
+            next_index = 1
+            existing_ids = {item.object_id for item in objects}
+            for name in self._discover_objects(root):
+                if name in declared_bodies:
+                    continue
+                while f"scene_object_{next_index:03d}" in existing_ids:
+                    next_index += 1
+                object_id = f"scene_object_{next_index:03d}"
+                objects.append(SceneObject(object_id=object_id, body_name=name, role="target", semantic_name=name, source="uploaded"))
+                existing_ids.add(object_id)
+                next_index += 1
             return SceneRegistry(scene_id=declared.scene_id or path.stem, robot=declared.robot or robot, objects=objects)
         names = self._discover_objects(root)
         objects = [SceneObject(object_id=f"scene_object_{i:03d}", body_name=name, role="target", semantic_name=name, source="uploaded") for i, name in enumerate(names, 1)]

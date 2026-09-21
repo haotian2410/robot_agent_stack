@@ -728,7 +728,37 @@ var/task01/
 
 ---
 
-## 14. Interaction Registry
+## 14. Persistent SceneSession 多轮运行
+
+一次性命令 `plan / compile / execute / run` 保持原有行为。需要在同一个 MuJoCo `MjModel/MjData/SkillRuntime` 上连续执行多轮任务时，使用 `chat`：
+
+```bash
+robot-agent chat \
+  --robot ur5e \
+  --provider qwen \
+  --planner qwen \
+  --qwen-base-url http://127.0.0.1:8080/v1 \
+  --qwen-model Qwen3.8-27B \
+  --output-dir var/sessions \
+  --viewer-mode headless
+```
+
+已有 XML 场景使用 Route B：
+
+```bash
+robot-agent chat \
+  --scene packages/robot_agent_control/world_model/robotsim/scene_001.xml \
+  --interaction-registry packages/robot_agent_control/demo/common/scenes/scene_001.interactions.json \
+  --provider qwen --planner qwen \
+  --qwen-base-url http://127.0.0.1:8080/v1 \
+  --qwen-model Qwen3.8-27B
+```
+
+`--viewer-mode` 可选 `headless`（服务器/无显示器）、`auto`（持续 GUI viewer）或 `step`。Session runner 只启动一次，支持 `OPEN_SESSION`、`EXECUTE_BUNDLE`、`SNAPSHOT`、`OBSERVE`、`RELOAD_SCENE`、`CLOSE_SESSION`；每轮产物保存在 `var/sessions/<session_id>/turns/000N/`，实时状态保存在 `state/world_state.json`。
+
+多轮中，空间关系根据 live `WorldState` 重新计算；Scene Edit（目前支持 ADD/REMOVE）会生成新 scene version，保存关节/物体状态后 reload 并恢复，旧 `object_id` 不复用。`/exit` 关闭 session；查询如“现在有几个苹果”会读取当前状态，不会启动控制动作。
+
+## 15. Interaction Registry
 
 `SceneRegistry` 和 `InteractionRegistry` 的职责不同：
 

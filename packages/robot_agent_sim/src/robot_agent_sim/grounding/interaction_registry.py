@@ -10,21 +10,49 @@ from typing import Any
 import mujoco
 
 from ..contracts.grounded_task import GroundedEntity
+from .world_relation import WorldRelationResolver
 
 
 def ground_with_interaction_registry(
     entities,
     registry_path: str | Path,
     scene_path: str | Path,
+    *,
+    intent=None,
+    positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
 ) -> list[GroundedEntity]:
+    grounded, missing = ground_partial_with_interaction_registry(
+        entities, registry_path, scene_path, intent=intent, positions=positions
+    )
+    if missing:
+        names = ", ".join(entity.semantic_name for entity in missing)
+        raise ValueError(f"interaction registry grounding is missing: {names}")
+    return grounded
+
+
+def ground_partial_with_interaction_registry(
+    entities,
+    registry_path: str | Path,
+    scene_path: str | Path,
+    *,
+    intent=None,
+    positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
+) -> tuple[list[GroundedEntity], list[Any]]:
+    """Ground the subset covered by an authored registry.
+
+    Uploaded scenes often have a deliberately small interaction sidecar.  A
+    missing entry is not the same as an invalid scene: callers can send only
+    the unresolved entities through geometry/vision grounding while preserving
+    authored execution metadata for the entries that are known.
+    """
     registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
     objects = registry.get("objects")
     if not isinstance(objects, dict):
         raise ValueError("interaction registry must contain an objects mapping")
     model = mujoco.MjModel.from_xml_path(str(Path(scene_path).resolve()))
 
-    result: list[GroundedEntity] = []
-    used: set[str] = set()
+    candidates_by_entity: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    missing_entities = []
     for entity in entities:
         query_values = {
             _normalize(entity.semantic_name),
@@ -47,15 +75,46 @@ def ground_with_interaction_registry(
             ):
                 fuzzy.append((object_id, item))
         candidates = exact or fuzzy
-        candidates = [candidate for candidate in candidates if candidate[0] not in used]
-        if len(candidates) != 1:
-            names = [candidate[0] for candidate in candidates]
-            raise ValueError(
-                f"interaction registry grounding for {entity.semantic_name!r} "
-                f"is {'missing' if not candidates else 'ambiguous'}: {names}"
-            )
-        object_id, item = candidates[0]
-        used.add(object_id)
+        if not candidates:
+            missing_entities.append(entity)
+            continue
+        candidates_by_entity[entity.entity_id] = candidates
+
+    if not candidates_by_entity:
+        return [], missing_entities
+
+    selected: dict[str, str] = {}
+    if intent is not None and positions is not None and all(
+        entity.entity_id in candidates_by_entity for entity in intent.entities
+    ):
+        resolver_candidates = {
+            entity_id: [{"object_id": object_id} for object_id, _ in values]
+            for entity_id, values in candidates_by_entity.items()
+        }
+        selected = {
+            entity_id: value["object_id"]
+            for entity_id, value in WorldRelationResolver().resolve(intent, resolver_candidates, positions).items()
+        }
+    else:
+        used: set[str] = set()
+        for entity in entities:
+            if entity.entity_id not in candidates_by_entity:
+                continue
+            available = [item for item in candidates_by_entity[entity.entity_id] if item[0] not in used]
+            if len(available) != 1:
+                raise ValueError(
+                    f"interaction registry grounding for {entity.semantic_name!r} is ambiguous: "
+                    f"{[item[0] for item in available]}"
+                )
+            selected[entity.entity_id] = available[0][0]
+            used.add(available[0][0])
+
+    result: list[GroundedEntity] = []
+    for entity in entities:
+        if entity.entity_id not in selected:
+            continue
+        object_id = selected[entity.entity_id]
+        item = dict(objects[object_id])
         result.append(
             GroundedEntity(
                 entity_id=entity.entity_id,
@@ -65,7 +124,7 @@ def ground_with_interaction_registry(
                 grounding_method="interaction_registry",
             )
         )
-    return result
+    return result, missing_entities
 
 
 def _normalize(value: str) -> str:
