@@ -238,6 +238,43 @@ def test_partial_interaction_registry_uses_cached_missing_entity_without_vision(
     assert vision.calls_count == 0
 
 
+def test_partial_interaction_registry_only_sends_unresolved_entity_to_vision(monkeypatch, tmp_path):
+    class RecordingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([VisionDetection(entity_id="blue_box_01", bbox=[300, 300, 400, 400])])
+            self.requests = []
+
+        def detect(self, request):
+            self.requests.append(request)
+            return super().detect(request)
+
+    vision = RecordingVision()
+    engine, scene = _two_object_route_b(monkeypatch, tmp_path, vision)
+    interactions = tmp_path / "partial-vision.json"
+    interactions.write_text(json.dumps({
+        "objects": {
+            "red_ball": {
+                "aliases": ["red ball"],
+                "spatial": {"source": {"type": "body", "name": "body_a"}},
+            }
+        }
+    }), encoding="utf-8")
+
+    result = engine.plan(
+        "把红球放到蓝色盒子", robot="ur5e", scene=scene,
+        interaction_registry=interactions, output_dir=tmp_path / "out",
+    )
+
+    assert result.status == "accepted"
+    assert [[entity.id for entity in request.entities] for request in vision.requests] == [["blue_box_01"]]
+    assert result.visual_grounding["providers"] == {
+        "red_ball_01": ["interaction_registry"],
+        "blue_box_01": ["vision"],
+    }
+    methods = {entity["entity_id"]: entity["grounding_method"] for entity in result.grounded_task["entities"]}
+    assert methods == {"red_ball_01": "interaction_registry", "blue_box_01": "vlm_iou"}
+
+
 def test_current_scene_allows_optional_vision_fallback_with_qwen_budget(monkeypatch, tmp_path):
     class RecordingVision(FakeVisionGroundingProvider):
         def __init__(self):
