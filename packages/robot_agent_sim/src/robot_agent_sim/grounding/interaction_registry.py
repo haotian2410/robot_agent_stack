@@ -50,32 +50,28 @@ def ground_partial_with_interaction_registry(
     the unresolved entities through geometry/vision grounding while preserving
     authored execution metadata for the entries that are known.
     """
-    registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
-    objects = registry.get("objects")
-    if not isinstance(objects, dict):
-        raise ValueError("interaction registry must contain an objects mapping")
-    model = mujoco.MjModel.from_xml_path(str(Path(scene_path).resolve()))
-
-    candidates_by_entity: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    missing_entities = []
-    for entity in entities:
-        query_values = {entity.semantic_name, *entity.aliases}
-        exact: list[tuple[str, dict[str, Any]]] = []
-        fuzzy: list[tuple[str, dict[str, Any]]] = []
-        for object_id, item in objects.items():
-            if object_id in (excluded_object_ids or set()):
-                continue
-            names = {object_id, str(item.get("object_id", object_id)), *(str(value) for value in item.get("aliases", []))}
-            if any(exact_name_match(query, name) for query in query_values for name in names):
-                exact.append((object_id, item))
-        candidates = exact or fuzzy
-        if not candidates:
-            missing_entities.append(entity)
-            continue
-        candidates_by_entity[entity.entity_id] = candidates
+    candidates_by_entity, objects, model, missing_entities = collect_interaction_candidates(
+        entities, registry_path, scene_path, excluded_object_ids=excluded_object_ids
+    )
 
     if not candidates_by_entity:
         return [], missing_entities
+
+    # A sidecar entry must not be selected in isolation when a selection
+    # relation crosses from an authored entity to an unresolved entity.  Defer
+    # the whole connected relation component so the caller can merge all
+    # candidate providers and resolve the relation once.
+    if intent is not None and missing_entities:
+        known_ids = set(candidates_by_entity)
+        missing_ids = {entity.entity_id for entity in missing_entities}
+        crosses_partial = any(
+            relation.scope == "selection"
+            and ((relation.subject in known_ids and relation.reference in missing_ids)
+                 or (relation.subject in missing_ids and relation.reference in known_ids))
+            for relation in intent.spatial_relations
+        )
+        if crosses_partial:
+            return [], list(entities)
 
     selected: dict[str, str] = {}
     if intent is not None and positions is not None and all(
@@ -123,6 +119,46 @@ def ground_partial_with_interaction_registry(
             )
         )
     return result, missing_entities
+
+
+def collect_interaction_candidates(
+    entities,
+    registry_path: str | Path,
+    scene_path: str | Path,
+    *,
+    excluded_object_ids: set[str] | None = None,
+) -> tuple[dict[str, list[tuple[str, dict[str, Any]]]], dict[str, Any], mujoco.MjModel, list[Any]]:
+    """Return authored candidates without selecting a final object.
+
+    The interaction sidecar is a candidate provider, not an authority.  The
+    pipeline can therefore merge these candidates with semantic-cache,
+    geometry, and vision candidates before applying cross-entity relations.
+    """
+    registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+    objects = registry.get("objects")
+    if not isinstance(objects, dict):
+        raise ValueError("interaction registry must contain an objects mapping")
+    model = mujoco.MjModel.from_xml_path(str(Path(scene_path).resolve()))
+    candidates_by_entity: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    missing_entities = []
+    for entity in entities:
+        query_values = {entity.semantic_name, *entity.aliases}
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for object_id, item in objects.items():
+            if object_id in (excluded_object_ids or set()):
+                continue
+            names = {
+                object_id,
+                str(item.get("object_id", object_id)),
+                *(str(value) for value in item.get("aliases", [])),
+            }
+            if any(exact_name_match(query, name) for query in query_values for name in names):
+                candidates.append((object_id, item))
+        if candidates:
+            candidates_by_entity[entity.entity_id] = candidates
+        else:
+            missing_entities.append(entity)
+    return candidates_by_entity, objects, model, missing_entities
 
 
 def _normalize(value: str) -> str:

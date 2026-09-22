@@ -15,7 +15,7 @@ from ..models.budget import ModelCallMode
 from ..scene.mutator import SceneMutator
 from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
-from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, TurnKind, WorldState
+from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, SessionControlType, TurnKind, WorldState
 
 
 class SceneSession:
@@ -40,6 +40,7 @@ class SceneSession:
         self.world_state: WorldState | None = None
         self.dialogue_state = DialogueState()
         self.control: SessionExecutorClient | None = None
+        self.paused = False
         self.execution_history: list[dict[str, Any]] = []
         self.next_instance_index: dict[str, int] = {}
         self._write_session()
@@ -68,7 +69,22 @@ class SceneSession:
             self._write_session()
             return {"status": "query_answer", "turn": self.turn_index, "turn_type": "scene_query", "answer": query, "scene_version": self.scene_version, "world_version": self.world_version}
         if parsed_turn.turn_kind == TurnKind.SESSION_CONTROL:
-            raise ValueError("session control is not supported by run_turn")
+            if parsed_turn.session_control is None:
+                raise ValueError("session_control turn requires an action")
+            action = parsed_turn.session_control.action
+            if action == SessionControlType.PAUSE:
+                self.paused = True
+                self._write_session()
+                return {"status": "session_paused", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version}
+            if action == SessionControlType.RESUME:
+                self.paused = False
+                self._write_session()
+                return {"status": "session_resumed", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version}
+            self.close()
+            return {"status": "session_closed", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version}
+        if self.paused:
+            self._write_session()
+            return {"status": "session_paused", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version}
         explicit_bindings = {}
         excluded_object_ids = set()
         if "另一个" in instruction:
@@ -358,7 +374,7 @@ class SceneSession:
         return f"当前{label}位置：{positions[0]}。" if positions else f"当前未找到{label}。"
 
     def _write_session(self) -> None:
-        payload = {"session_id": self.session_id, "origin": self.origin, "scene_version": self.scene_version, "world_version": self.world_version, "turn_index": self.turn_index, "scene_path": str(self.scene_path) if self.scene_path else None, "interaction_registry": str(self.interaction_registry) if self.interaction_registry else None, "next_instance_index": self.next_instance_index, "execution_history": self.execution_history}
+        payload = {"session_id": self.session_id, "origin": self.origin, "scene_version": self.scene_version, "world_version": self.world_version, "turn_index": self.turn_index, "paused": self.paused, "scene_path": str(self.scene_path) if self.scene_path else None, "interaction_registry": str(self.interaction_registry) if self.interaction_registry else None, "next_instance_index": self.next_instance_index, "execution_history": self.execution_history}
         (self.output_root / "session.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 
 from ..contracts.task_intent import Operation, QuantityMode, SpatialRelationType, TaskType
-from ..contracts.turn import SceneEditIntent, SceneEditRelation, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
+from ..contracts.turn import (
+    SceneEditIntent, SceneEditRelation, SceneEditType, SceneQueryIntent, SceneQueryType,
+    SessionControlIntent, SessionControlType, TurnKind,
+)
 from .skill_planning import LLMOperationPlan, LLMPlanStep, SkillPlanLLMOutput
 from .task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
 from .vision_grounding import VisionCandidate, VisionLLMOutput
@@ -16,6 +19,18 @@ class FakeTaskUnderstandingProvider:
     def understand(self, request):
         text = request.instruction.strip()
         low = text.casefold()
+        control = (
+            SessionControlType.PAUSE if text in {"暂停", "暂停执行", "pause"}
+            else SessionControlType.RESUME if text in {"继续", "恢复", "恢复执行", "resume"}
+            else SessionControlType.CLOSE if text in {"关闭会话", "结束会话", "close"}
+            else None
+        )
+        if control is not None:
+            return TaskParseLLMOutput(
+                status="accepted",
+                turn_kind=TurnKind.SESSION_CONTROL,
+                session_control=SessionControlIntent(action=control),
+            )
         # The offline provider mirrors the single Task Understanding contract
         # used by Qwen.  SceneSession no longer carries its own turn-kind
         # parser, so switching providers cannot change session routing.
@@ -41,8 +56,9 @@ class FakeTaskUnderstandingProvider:
                     reference="basket" if "篮" in text else None,
                 ),
             )
-        if any(token in text for token in ("几个", "多少", "数量", "在哪里", "状态")) or ("位置" in text and any(token in text for token in ("当前", "查询", "报告"))):
-            query_type = SceneQueryType.COUNT if any(token in text for token in ("几个", "多少", "数量")) else SceneQueryType.POSITION if any(token in text for token in ("在哪里", "位置")) else SceneQueryType.STATE
+        existence_query = any(token in text for token in ("有没有", "是否有", "还在吗")) or ("有" in text and "吗" in text)
+        if existence_query or any(token in text for token in ("几个", "多少", "数量", "在哪里", "状态")) or ("位置" in text and any(token in text for token in ("当前", "查询", "报告"))):
+            query_type = SceneQueryType.EXISTENCE if existence_query else SceneQueryType.COUNT if any(token in text for token in ("几个", "多少", "数量")) else SceneQueryType.POSITION if any(token in text for token in ("在哪里", "位置")) else SceneQueryType.STATE
             labels = (("苹果", "apple", "fruit"), ("香蕉", "banana", "fruit"), ("棒球", "baseball", "ball"), ("篮子", "basket", "container"))
             match = next(((name, category) for zh, name, category in labels if zh in text or name in low), None)
             return TaskParseLLMOutput(status="accepted", turn_kind=TurnKind.SCENE_QUERY, scene_query=SceneQueryIntent(query_type=query_type, semantic_name=match[0] if match else None, category=match[1] if match else None, referent=any(token in text for token in ("它", "刚才那个", "这个"))))

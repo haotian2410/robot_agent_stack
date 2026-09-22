@@ -11,7 +11,7 @@ from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest
 from robot_agent_sim.models.vision_grounding import VisionDetection
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.grounding.interaction_registry import ground_partial_with_interaction_registry
-from robot_agent_sim.contracts.task_intent import TaskEntity
+from robot_agent_sim.contracts.task_intent import TaskEntity, TaskIntent, TaskStatus, TaskType, Operation, SpatialRelation, SpatialRelationType
 from robot_agent_sim.scene.registry import SceneObject, SceneRegistry
 from robot_agent_sim.grounding.segmentation import InstanceObservation, SceneObservation
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
@@ -113,6 +113,33 @@ def test_partial_interaction_registry_returns_known_and_unresolved_entities(tmp_
     known, missing = ground_partial_with_interaction_registry(entities, registry, SCENE_003)
     assert [item.object_id for item in known] == ["red_ball"]
     assert [item.entity_id for item in missing] == ["blue_box"]
+
+
+def test_partial_interaction_registry_defers_cross_entity_relation(tmp_path):
+    registry = tmp_path / "partial-relations.interactions.json"
+    registry.write_text(json.dumps({
+        "objects": {
+            "red_ball": {
+                "aliases": ["red ball"],
+                "spatial": {"source": {"type": "body", "name": "push_button_base"}},
+            }
+        }
+    }), encoding="utf-8")
+    entities = [
+        TaskEntity(entity_id="red_ball", semantic_name="red ball", category="ball"),
+        TaskEntity(entity_id="blue_box", semantic_name="blue box", category="container"),
+    ]
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED,
+        instruction="把红球放到蓝色盒子",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=entities,
+        operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="red_ball", destination="blue_box")],
+        spatial_relations=[SpatialRelation(subject="red_ball", relation=SpatialRelationType.LEFT_OF, reference="blue_box")],
+    )
+    known, missing = ground_partial_with_interaction_registry(entities, registry, SCENE_003, intent=intent, positions={"red_ball": (0, 0, 0), "blue_box": (1, 0, 0)})
+    assert known == []
+    assert {item.entity_id for item in missing} == {"red_ball", "blue_box"}
 
 
 def test_route_b_default_fake_detection_fails_without_forcing_binding(tmp_path):

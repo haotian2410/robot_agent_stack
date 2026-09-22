@@ -39,6 +39,17 @@ def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path, monkeyp
         session.close()
 
 
+def test_scene_query_existence_is_structured(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        session.run_turn("抓苹果")
+        answer = session.run_turn("场景里有没有苹果")
+        assert answer["status"] == "query_answer"
+        assert "存在苹果" in answer["answer"]
+    finally:
+        session.close()
+
+
 def test_dialogue_referent_keeps_stable_object_id(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
@@ -51,6 +62,19 @@ def test_dialogue_referent_keeps_stable_object_id(tmp_path):
         assert [step["skill_name"] for step in second["result"]["skill_plan"]["steps"]] == ["locate", "move", "release"]
     finally:
         session.close()
+
+
+def test_session_control_pause_resume_and_close(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    paused = session.run_turn("暂停")
+    assert paused["status"] == "session_paused"
+    blocked = session.run_turn("抓苹果")
+    assert blocked["status"] == "session_paused"
+    resumed = session.run_turn("继续")
+    assert resumed["status"] == "session_resumed"
+    closed = session.run_turn("关闭会话")
+    assert closed["status"] == "session_closed"
+    assert session.control is None
 
 
 def test_scene_query_uses_dialogue_binding_and_world_state(tmp_path):
