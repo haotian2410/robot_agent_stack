@@ -12,6 +12,8 @@ from robot_agent_sim.models.vision_grounding import VisionDetection
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.grounding.interaction_registry import ground_partial_with_interaction_registry
 from robot_agent_sim.contracts.task_intent import TaskEntity
+from robot_agent_sim.scene.registry import SceneObject, SceneRegistry
+from robot_agent_sim.grounding.segmentation import InstanceObservation, SceneObservation
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
 from robot_agent_sim.contracts.task_intent import Operation, TaskType
 
@@ -134,6 +136,72 @@ def test_route_b_semantic_cache_skips_second_vision_call(tmp_path):
     assert second.status == "accepted"
     assert second.visual_grounding["method"] == "semantic_cache"
     assert vision.calls_count == 1
+
+
+def _two_object_route_b(monkeypatch, tmp_path, vision):
+    scene = tmp_path / "two.xml"
+    scene.write_text('<mujoco><worldbody><body name="body_a"><geom type="sphere" size="0.02"/></body><body name="body_b" pos="0.2 0 0"><geom type="box" size="0.03 0.03 0.03"/></body></worldbody></mujoco>', encoding="utf-8")
+    registry = SceneRegistry(scene_id="two", robot="ur5e", objects=[
+        SceneObject(object_id="scene_object_001", body_name="body_a", role="target", semantic_name="body_a", source="uploaded"),
+        SceneObject(object_id="scene_object_002", body_name="body_b", role="target", semantic_name="body_b", source="uploaded"),
+    ])
+    observation = SceneObservation(
+        scene_id="two", camera_id="-1", image_width_px=640, image_height_px=480,
+        rgb_path=tmp_path / "rgb.png", segmentation_path=tmp_path / "seg.npy",
+        segmentation_visualization_path=tmp_path / "seg.png", instance_index_path=tmp_path / "instances.json",
+        instances=[
+            InstanceObservation(object_id="scene_object_001", body_name="body_a", bbox=(100, 100, 200, 200), visible_pixel_count=100, world_position=(0.0, 0.0, 0.0)),
+            InstanceObservation(object_id="scene_object_002", body_name="body_b", bbox=(300, 300, 400, 400), visible_pixel_count=100, world_position=(0.2, 0.0, 0.0)),
+        ],
+    )
+    engine = PipelineEngine(vision=vision)
+    monkeypatch.setattr(engine.backend, "load_uploaded", lambda path, robot: registry)
+    monkeypatch.setattr(engine.backend.renderer, "render", lambda path, value, out: observation)
+    return engine, scene
+
+
+def test_mixed_cached_and_uncached_entities_only_send_uncached_to_vision(monkeypatch, tmp_path):
+    class RecordingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([VisionDetection(entity_id="blue_box_01", bbox=[300, 300, 400, 400])])
+            self.requests = []
+
+        def detect(self, request):
+            self.requests.append(request)
+            return super().detect(request)
+
+    vision = RecordingVision()
+    engine, scene = _two_object_route_b(monkeypatch, tmp_path, vision)
+    result = engine.plan(
+        "把红球放到蓝色盒子", robot="ur5e", scene=scene, output_dir=tmp_path / "out",
+        semantic_map={"objects": {"scene_object_001": {"labels": ["red ball"]}}},
+    )
+    assert result.status == "accepted"
+    assert [[entity.id for entity in request.entities] for request in vision.requests] == [["blue_box_01"]]
+    methods = {entity["entity_id"]: entity["grounding_method"] for entity in result.grounded_task["entities"]}
+    assert methods == {"red_ball_01": "semantic_cache", "blue_box_01": "vlm_iou"}
+
+
+def test_partial_interaction_registry_uses_cached_missing_entity_without_vision(monkeypatch, tmp_path):
+    class FailingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([])
+            self.calls_count = 0
+
+        def detect(self, request):
+            self.calls_count += 1
+            raise AssertionError("vision should not be called")
+
+    vision = FailingVision()
+    engine, scene = _two_object_route_b(monkeypatch, tmp_path, vision)
+    interactions = tmp_path / "partial.json"
+    interactions.write_text(json.dumps({"objects": {"red_ball": {"aliases": ["red ball"], "spatial": {"source": {"type": "body", "name": "body_a"}}}}}), encoding="utf-8")
+    result = engine.plan(
+        "把红球放到蓝色盒子", robot="ur5e", scene=scene, interaction_registry=interactions,
+        output_dir=tmp_path / "out", semantic_map={"objects": {"scene_object_002": {"labels": ["blue box"]}}},
+    )
+    assert result.status == "accepted"
+    assert vision.calls_count == 0
 
 
 def test_qwen_provider_sends_fixed_stage_and_extracts_json(monkeypatch, tmp_path):

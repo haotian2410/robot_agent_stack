@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import mujoco
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -50,6 +51,7 @@ class MoveSkill:
         try:
             normalized = validate_move_request(request, self.config)
             self.collision_checker.allowed_target_geom_ids = set()
+            self.collision_checker.allowed_held_contact_geom_ids = set()
             target_body_name = normalized.get("target_body_name")
             if target_body_name:
                 body_id = mujoco.mj_name2id(self.robot_runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(target_body_name))
@@ -58,6 +60,7 @@ class MoveSkill:
                         geom_id for geom_id in range(self.robot_runtime.model.ngeom)
                         if int(self.robot_runtime.model.geom_bodyid[geom_id]) == body_id
                     }
+                    self.collision_checker.allowed_held_contact_geom_ids = self._contained_payload_geom_ids(body_id)
             if not self.collision_checker.allowed_target_geom_ids:
                 target_geom_name = normalized.get("target_geom_name")
                 if target_geom_name:
@@ -107,6 +110,31 @@ class MoveSkill:
             result = failure_result(ErrorCode.INTERNAL_ERROR, str(exc), failed_stage="unknown", recoverable=False)
         if selection is not None:
             result["selection"] = selection
+        return result
+
+    def _contained_payload_geom_ids(self, target_body_id: int) -> set[int]:
+        """Return only payload geoms already spatially inside the target body.
+
+        This lets a held object enter a container that already contains an
+        object without globally disabling held-object/environment collisions.
+        """
+        model = self.robot_runtime.model
+        data = self.robot_runtime.data
+        target_geom_ids = [gid for gid in range(model.ngeom) if int(model.geom_bodyid[gid]) == target_body_id]
+        if not target_geom_ids:
+            return set()
+        centers = np.asarray([data.geom_xpos[gid] for gid in target_geom_ids], dtype=float)
+        radii = np.asarray([float(model.geom_rbound[gid]) for gid in target_geom_ids], dtype=float)
+        lower = np.min(centers - radii[:, None], axis=0)
+        upper = np.max(centers + radii[:, None], axis=0)
+        result: set[int] = set()
+        held_body_id = getattr(getattr(self.robot_runtime, "gripper_controller", None), "_held_body_id", None)
+        for body_id in range(1, model.nbody):
+            if body_id in self.collision_checker.robot_body_ids or body_id in {target_body_id, held_body_id}:
+                continue
+            position = np.asarray(data.xpos[body_id], dtype=float)
+            if np.all(position >= lower) and np.all(position <= upper):
+                result.update(gid for gid in range(model.ngeom) if int(model.geom_bodyid[gid]) == body_id)
         return result
 
     def _get_runtime_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:

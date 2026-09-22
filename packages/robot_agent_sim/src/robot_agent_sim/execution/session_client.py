@@ -62,6 +62,9 @@ class SessionExecutorClient:
     def reload(self, bundle: str | Path) -> dict[str, Any]:
         return self.request("RELOAD_SCENE", bundle=str(Path(bundle).resolve()))
 
+    def reload_scene(self, scene: str | Path, registry: str | Path, *, robot: str | None = None) -> dict[str, Any]:
+        return self.request("RELOAD_SCENE_STATE", scene=str(Path(scene).resolve()), registry=str(Path(registry).resolve()), robot=robot)
+
     def close(self) -> None:
         if not self.closed:
             try:

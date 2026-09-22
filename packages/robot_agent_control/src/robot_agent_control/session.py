@@ -10,7 +10,7 @@ from typing import Any
 import mujoco
 import numpy as np
 import imageio.v2 as imageio
-from robot_agent_protocol import ErrorCode
+from robot_agent_protocol import ErrorCode, scene_sha256
 
 from .command.converter import SkillCommandConverter
 from .contracts import CommandDocument, ExecutionFailure, ExecutionReport, RuntimeStepReport, ViewerMode, load_command_document
@@ -208,9 +208,37 @@ class ControlSession:
         self._close_viewer()
         self.runtime.approach_checker.close()
         document = self._load(command_document)
-        registry, runtime = self.executor._preflight(document, headless=True)
+        registry, runtime = self.executor._preflight(document, headless=self.viewer_mode == ViewerMode.HEADLESS)
         self.document = document
         self.registry = registry
+        self.runtime = runtime
+        self._restore_state(transfer)
+        if self.viewer_mode != ViewerMode.HEADLESS:
+            self._open_viewer()
+        return self.snapshot()
+
+    def reload_scene(self, scene: str | Path, registry: str | Path, *, robot: str | None = None) -> dict[str, Any]:
+        """Reload topology without inventing an executable command.
+
+        Empty-object scenes are valid session states; their reload path must
+        not manufacture a locate command merely to satisfy the one-shot
+        command-document contract.
+        """
+        if self.closed:
+            raise RuntimeError("control session is closed")
+        transfer = self._transfer_state()
+        self._close_viewer()
+        self.runtime.approach_checker.close()
+        document = self.document.model_copy(update={
+            "robot": robot or self.document.robot,
+            "scene": str(Path(scene).expanduser().resolve()),
+            "registry": str(Path(registry).expanduser().resolve()),
+            "scene_fingerprint": scene_sha256(Path(scene)),
+            "commands": [],
+        })
+        registry_obj, runtime = self.executor._preflight(document, headless=self.viewer_mode == ViewerMode.HEADLESS)
+        self.document = document
+        self.registry = registry_obj
         self.runtime = runtime
         self._restore_state(transfer)
         if self.viewer_mode != ViewerMode.HEADLESS:
@@ -244,9 +272,12 @@ class ControlSession:
         mujoco.mj_forward(runtime.model, runtime.data)
         held_object = transfer.get("held_object")
         gripper = getattr(runtime, "gripper_controller", None)
-        if held_object and gripper is not None:
+        if held_object and gripper is not None and held_object in self.registry.objects:
             gripper._attach_object(held_object)
-            gripper._holding = True
+            gripper._holding = getattr(gripper, "_held_body_id", None) is not None
+        elif gripper is not None:
+            gripper._holding = False
+            gripper._detach_object()
         self.runtime.refresh_move_skill()
 
     def close(self) -> None:

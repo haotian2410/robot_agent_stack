@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from robot_agent_control import CommandDocument, ControlExecutor, load_command_document
+from robot_agent_control.session import ControlSession
 from robot_agent_control.contracts import scene_sha256
 
 
@@ -70,6 +71,37 @@ def test_headless_executor_writes_report_and_trace(tmp_path):
     assert event["runtime_step_id"] == "runtime-step-001"
     assert event["started"] is event["completed"] is event["success"] is True
     assert event["started_at"] <= event["finished_at"]
+
+
+def test_session_reload_preserves_realtime_for_auto_viewer(monkeypatch):
+    # Keep this regression display-independent while exercising the same
+    # preflight flag used by the persistent GUI session.
+    monkeypatch.setattr(ControlSession, "_open_viewer", lambda self: None)
+    monkeypatch.setattr(ControlSession, "_close_viewer", lambda self: None)
+    document = load_command_document(COMMANDS)
+    session = ControlSession(document, headless=False, viewer_mode="auto")
+    try:
+        assert session.runtime.runtime.realtime is True
+        session.reload_scene(document.scene, document.registry, robot=document.robot)
+        assert session.runtime.runtime.realtime is True
+    finally:
+        session.close()
+
+
+def test_session_reload_accepts_zero_task_object_scene(tmp_path):
+    from robot_agent_sim.backends.mujoco.backend import MujocoSceneBackend
+    from robot_agent_sim.execution.interaction_registry_builder import build_generated_registry
+    from robot_agent_sim.scene.registry import SceneRegistry
+
+    scene = MujocoSceneBackend().compose(SceneRegistry(scene_id="zero", robot="ur5e", objects=[]), {}, tmp_path)
+    interactions = build_generated_registry(scene, SceneRegistry(scene_id="zero", robot="ur5e", objects=[]), tmp_path / "interaction_registry.json")
+    document = load_command_document(COMMANDS)
+    session = ControlSession(document, headless=True)
+    try:
+        snapshot = session.reload_scene(scene, interactions, robot="ur5e")
+        assert snapshot["objects"] == {}
+    finally:
+        session.close()
 
 
 def test_registry_source_names_are_checked_before_execution(tmp_path):

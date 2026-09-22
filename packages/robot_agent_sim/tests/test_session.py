@@ -27,10 +27,36 @@ def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path):
         assert session.scene_version == 1
         assert session.world_version == 2
         assert session.world_state.held_object == "apple_01"
+        assert second["result"]["route"] == "A"
         assert (session.output_root / "turns/0001/execution_report.json").is_file()
         assert (session.output_root / "turns/0002/execution_report.json").is_file()
         saved = json.loads((session.output_root / "state/world_state.json").read_text())
         assert saved["turn_index"] == 2
+    finally:
+        session.close()
+
+
+def test_dialogue_referent_keeps_stable_object_id(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果抓起来")
+        selected = first["result"]["grounded_task"]["entities"][0]["object_id"]
+        second = session.run_turn("把它放进篮子")
+        rebound = next(entity for entity in second["result"]["grounded_task"]["entities"] if entity["entity_id"].startswith("apple"))
+        assert rebound["object_id"] == selected
+        assert rebound["grounding_method"] == "dialogue_binding"
+    finally:
+        session.close()
+
+
+def test_remove_held_object_is_rejected(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("抓苹果")
+        assert first["report"]["success"] is True
+        assert session.world_state.held_object == "apple_01"
+        with pytest.raises(ValueError, match="HELD_OBJECT_REMOVE_FORBIDDEN"):
+            session.run_turn("删除苹果")
     finally:
         session.close()
 

@@ -82,17 +82,26 @@ class SceneSession:
                 instances=[InstanceObservation.model_validate(item) for item in live["observation"]["instances"]],
             )
         task_instruction = self._resolve_dialogue_instruction(instruction)
-        result: PipelineResult = self.engine.plan(
-            task_instruction,
+        plan_kwargs = dict(
             robot=self.robot,
-            scene=scene,
             interaction_registry=registry,
             output_dir=turn_dir,
             planner=self.planner,
             world_positions={object_id: state.position for object_id, state in self.world_state.objects.items()} if self.world_state else None,
             live_observation=live_observation,
             semantic_map=self.semantic_map.model_dump(mode="json"),
+            explicit_object_id=self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) else None,
         )
+        if self.scene_version == 0:
+            result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)
+        else:
+            result = self.engine.plan_current_scene(
+                task_instruction,
+                scene_path=self.scene_path,
+                scene_registry=SceneRegistry.model_validate(self.scene_registry),
+                origin=self.origin or "generated",
+                **plan_kwargs,
+            )
         if result.status != "accepted":
             self._record_dialogue(instruction)
             return {"status": result.status, "error": result.error, "turn": self.turn_index}
@@ -120,7 +129,7 @@ class SceneSession:
         self._learn_semantics(result)
         self.execution_history.append({"turn": self.turn_index, "instruction": instruction, "report": control_response.get("report", {})})
         self._write_session()
-        return {"status": "accepted", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version, "result": result.model_dump(mode="json"), "report": control_response.get("report"), "world_state": self.world_state.model_dump(mode="json")}
+        return {"status": "accepted", "turn": self.turn_index, "turn_type": "robot_task", "scene_version": self.scene_version, "world_version": self.world_version, "result": result.model_dump(mode="json"), "report": control_response.get("report"), "world_state": self.world_state.model_dump(mode="json")}
 
     def _run_scene_edit(self, instruction: str, edit: SceneEditIntent, turn_dir: Path) -> dict[str, Any]:
         if self.origin != "generated" or self.scene_path is None or self.control is None or self.world_state is None:
@@ -151,6 +160,8 @@ class SceneSession:
             patch = {"operation": "add", "object_id": object_id, "relation": edit.relation, "reference": reference_id}
         elif edit.operation == SceneEditType.REMOVE:
             object_id = self._resolve_semantic_object(edit.semantic_name)
+            if self.world_state.held_object == object_id:
+                raise ValueError(f"HELD_OBJECT_REMOVE_FORBIDDEN: cannot remove held object {object_id}")
             updated, scene, interactions = mutator.remove(registry, object_id, current_positions=positions, output_dir=scene_dir)
             self.semantic_map.objects.pop(object_id, None)
             patch = {"operation": "remove", "object_id": object_id}
@@ -159,8 +170,7 @@ class SceneSession:
         self.scene_registry = updated.model_dump(mode="json")
         self.scene_path = scene.resolve()
         self.interaction_registry = interactions.resolve()
-        reload_bundle = self._write_reload_bundle(turn_dir)
-        response = self.control.reload(reload_bundle)
+        response = self.control.reload_scene(self.scene_path, self.interaction_registry, robot=self.robot)
         self.scene_version = next_scene_version
         self.world_version += 1
         self.world_state = WorldState.model_validate({**response["snapshot"], "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
@@ -171,22 +181,6 @@ class SceneSession:
         self._record_dialogue(instruction)
         self._write_session()
         return {"status": "scene_updated", "turn": self.turn_index, "turn_type": "scene_edit", "patch": patch, "scene_version": self.scene_version, "world_version": self.world_version, "runtime_reloaded": True, "state_restored": True}
-
-    def _write_reload_bundle(self, turn_dir: Path) -> Path:
-        first_object = next(iter(json.loads(self.interaction_registry.read_text(encoding="utf-8"))["objects"]))
-        document = CommandDocument(
-            robot=self.robot,
-            scene=str(self.scene_path),
-            registry=str(self.interaction_registry),
-            scene_fingerprint=scene_sha256(self.scene_path),
-            commands=[SkillCommand(command_id="reload-locate", skill_name="locate", parameters={"target": first_object})],
-        )
-        commands_path = turn_dir / "reload.commands.json"
-        commands_path.write_text(document.model_dump_json(indent=2), encoding="utf-8")
-        bundle = ExecutionBundle(robot=self.robot, route="A", task_dir=str(turn_dir.resolve()), scene=str(self.scene_path), scene_fingerprint=document.scene_fingerprint, interaction_registry=str(self.interaction_registry), commands=str(commands_path.resolve()))
-        bundle_path = turn_dir / "reload.execution_bundle.json"
-        bundle_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
-        return bundle_path
 
     @staticmethod
     def _parse_scene_edit(instruction: str) -> SceneEditIntent | None:
@@ -309,7 +303,7 @@ class SceneSession:
         semantic = self.semantic_map.objects.get(object_id)
         if semantic is None or not semantic.labels:
             return instruction
-        label = next((value for value in semantic.labels if any("\u4e00" <= char <= "\u9fff" for char in value)), semantic.labels[0])
+        label = next((value for value in semantic.labels if any("\u4e00" <= char <= "\u9fff" for char in value)), self._zh_label(re.sub(r"_[0-9]+$", "", object_id)))
         resolved = instruction
         for token in ("刚才那个", "这个", "它"):
             resolved = resolved.replace(token, label)

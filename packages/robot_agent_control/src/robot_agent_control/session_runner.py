@@ -58,6 +58,10 @@ def main() -> int:
                     bundle = ExecutionBundle.model_validate_json(Path(request["bundle"]).read_text(encoding="utf-8"))
                     validate_bundle_consistency(bundle)
                     _reply(request_id, snapshot=session.reload(bundle.commands), reloaded=True)
+                elif operation == "RELOAD_SCENE_STATE":
+                    if session is None:
+                        raise RuntimeError("session is not open")
+                    _reply(request_id, snapshot=session.reload_scene(request["scene"], request["registry"], robot=request.get("robot")), reloaded=True)
                 elif operation == "CLOSE_SESSION":
                     if session is not None:
                         session.close()

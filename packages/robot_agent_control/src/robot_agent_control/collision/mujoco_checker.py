@@ -42,6 +42,7 @@ class MujocoCollisionChecker:
     def check(self, joints: Sequence[float], *, safety_distance: float = 0.0, allowed_geom_ids: set[int] | None = None) -> CollisionResult:
         if allowed_geom_ids is None:
             allowed_geom_ids = getattr(self, "allowed_target_geom_ids", None)
+        allowed_held_contact_geom_ids = getattr(self, "allowed_held_contact_geom_ids", set())
         values = np.asarray(joints, dtype=float)
         if values.shape != (6,):
             raise ValueError("Collision check requires a 6-value UR5e joint vector.")
@@ -71,7 +72,8 @@ class MujocoCollisionChecker:
             # gripper remain subject to normal collision checks; this exception
             # applies only when one side is the currently held object and the
             # request explicitly supplied a target body/geom allow-list.
-            if allowed_geom_ids and held_geom_ids and (geom1 in held_geom_ids or geom2 in held_geom_ids):
+            other_geom = geom2 if geom1 in held_geom_ids else geom1
+            if allowed_held_contact_geom_ids and held_geom_ids and (geom1 in held_geom_ids or geom2 in held_geom_ids) and other_geom in allowed_held_contact_geom_ids:
                 continue
             if allowed_geom_ids and (geom1 in allowed_geom_ids or geom2 in allowed_geom_ids):
                 continue
