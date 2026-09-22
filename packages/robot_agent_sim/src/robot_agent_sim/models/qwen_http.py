@@ -116,12 +116,13 @@ class QwenHTTPProvider:
 
     def understand(self, request):
         content = prompt_payload({"instruction": request.instruction})
-        value = json.loads(self._call("task_understanding", TASK_UNDERSTANDING_PROMPT, content))
+        raw_value = json.loads(self._call("task_understanding", TASK_UNDERSTANDING_PROMPT, content))
+        self.last_raw_values["task_understanding"] = raw_value
+        value = dict(raw_value) if isinstance(raw_value, dict) else raw_value
         # Accept the prototype's echoed instruction for compatibility, but do
         # not expose it as part of the minimal parser contract.
         if isinstance(value, dict):
             value.pop("instruction", None)
-        self.last_raw_values["task_understanding"] = value
         return TaskParseLLMOutput.model_validate(value)
 
     def detect(self, request):

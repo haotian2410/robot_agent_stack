@@ -17,6 +17,7 @@ from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
 from ..grounding.name_matching import exact_name_match
 from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, SessionControlType, TurnKind, WorldState
+from .referent_binder import DialogueBinding, ReferentBinder
 
 
 class SceneSession:
@@ -58,9 +59,10 @@ class SceneSession:
         # Resolve stable dialogue referents before the single understanding
         # call; the parser sees the same semantic instruction that planning
         # will consume, while DialogueState still records the original text.
-        task_instruction = self._resolve_dialogue_instruction(instruction)
+        dialogue_binding = self._dialogue_binding(instruction)
+        task_instruction = self._resolve_dialogue_instruction(instruction, dialogue_binding)
         parsed_turn = self.engine.understand_turn(task_instruction)
-        referent_object_id = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
+        referent_object_id = dialogue_binding.object_id if dialogue_binding else None
         if parsed_turn.turn_kind == TurnKind.SCENE_QUERY and parsed_turn.scene_query is not None and any(token in instruction for token in ("它", "刚才那个", "这个")):
             parsed_turn.scene_query.referent = True
         if parsed_turn.turn_kind == TurnKind.SCENE_EDIT:
@@ -89,19 +91,15 @@ class SceneSession:
         if self.paused:
             self._write_session()
             return {"status": "session_paused", "turn": self.turn_index, "scene_version": self.scene_version, "world_version": self.world_version}
-        explicit_bindings = {}
+        explicit_bindings = (
+            ReferentBinder.bind(parsed_turn, dialogue_binding)
+            if parsed_turn.status == "accepted" else {}
+        )
         excluded_object_ids = set()
         if "另一个" in instruction:
             previous_object = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
             if previous_object:
                 excluded_object_ids.add(previous_object)
-        if referent_object_id and any(token in instruction for token in ("它", "刚才那个", "这个")):
-            reference_pronoun = any(token in instruction for token in ("放到它", "放进它", "在它", "它旁边", "它里面"))
-            operation = next((item for item in parsed_turn.operations if item.source or item.target or item.destination or item.reference), None)
-            if operation is not None:
-                role_entity = (operation.destination or operation.reference) if reference_pronoun else (operation.source or operation.target)
-                if role_entity:
-                    explicit_bindings[role_entity] = referent_object_id
         if self.scene_path is None:
             scene = None
             self.origin = "uploaded" if interaction_registry else "generated"
@@ -132,7 +130,7 @@ class SceneSession:
             world_positions={object_id: state.position for object_id, state in self.world_state.objects.items()} if self.world_state else None,
             live_observation=live_observation,
             semantic_map=self.semantic_map.model_dump(mode="json"),
-            explicit_object_id=(self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) and not explicit_bindings else None),
+            explicit_object_id=None,
             explicit_bindings=explicit_bindings,
             parsed_turn=parsed_turn,
             planning_mode=ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL,
@@ -140,10 +138,10 @@ class SceneSession:
             excluded_object_ids=excluded_object_ids,
         )
         if self.scene_version == 0:
-            result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)
+            result: PipelineResult = self.engine.plan(instruction, scene=scene, **plan_kwargs)
         else:
             result = self.engine.plan_current_scene(
-                task_instruction,
+                instruction,
                 scene_path=self.scene_path,
                 scene_registry=SceneRegistry.model_validate(self.scene_registry),
                 origin=self.origin or "generated",
@@ -341,17 +339,27 @@ class SceneSession:
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
 
-    def _resolve_dialogue_instruction(self, instruction: str) -> str:
+    def _dialogue_binding(self, instruction: str) -> DialogueBinding | None:
+        if not any(token in instruction for token in ("它", "刚才那个", "这个")):
+            return None
         object_id = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
         if not object_id:
-            return instruction
+            raise ValueError("dialogue_binding_unresolved: no prior referent")
         semantic = self.semantic_map.objects.get(object_id)
         if semantic is None or not semantic.labels:
+            raise ValueError(f"dialogue_binding_unresolved: no semantic label for {object_id}")
+        label = next(
+            (value for value in semantic.labels if any("\u4e00" <= char <= "\u9fff" for char in value)),
+            self._zh_label(re.sub(r"_[0-9]+$", "", object_id)),
+        )
+        return DialogueBinding(object_id=object_id, semantic_label=label)
+
+    def _resolve_dialogue_instruction(self, instruction: str, binding: DialogueBinding | None) -> str:
+        if binding is None:
             return instruction
-        label = next((value for value in semantic.labels if any("\u4e00" <= char <= "\u9fff" for char in value)), self._zh_label(re.sub(r"_[0-9]+$", "", object_id)))
         resolved = instruction
         for token in ("刚才那个", "这个", "它"):
-            resolved = resolved.replace(token, label)
+            resolved = resolved.replace(token, f"[dialogue_ref={binding.semantic_label}]")
         return resolved
 
     def _run_scene_query(self, query: SceneQueryIntent | None, *, explicit_object_id: str | None = None) -> str | None:

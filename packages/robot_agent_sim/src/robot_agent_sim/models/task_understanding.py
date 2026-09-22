@@ -19,6 +19,7 @@ class ParseEntity(StrictModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     category: str = Field(min_length=1)
+    dialogue_ref: bool = False
     color: str | None = None
     count: int = Field(default=1, ge=1, le=100)
     quantity_mode: QuantityMode = QuantityMode.SINGLE

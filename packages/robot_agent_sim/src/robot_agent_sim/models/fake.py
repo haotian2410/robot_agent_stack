@@ -76,6 +76,32 @@ class FakeTaskUnderstandingProvider:
             return TaskParseLLMOutput(status="unsupported_task", raw_task=text)
 
         entities: list[ParseEntity] = []
+        dialogue_match = re.search(r"\[dialogue_ref=([^\]]+)\]", text)
+        dialogue_label = dialogue_match.group(1).strip() if dialogue_match else None
+        dialogue_names = {
+            "苹果": ("apple", "fruit"), "apple": ("apple", "fruit"),
+            "香蕉": ("banana", "fruit"), "banana": ("banana", "fruit"),
+            "棒球": ("baseball", "ball"), "baseball": ("baseball", "ball"),
+            "篮子": ("basket", "container"), "basket": ("basket", "container"),
+        }
+        dialogue_spec = dialogue_names.get((dialogue_label or "").casefold())
+        dialogue_subject_tokens = {
+            "apple": ("苹果", "apple"), "banana": ("香蕉", "banana"),
+            "baseball": ("棒球", "baseball"), "basket": ("篮子", "basket"),
+        }
+        dialogue_relative = None
+        if dialogue_match and dialogue_spec:
+            suffix = text[dialogue_match.end():]
+            relation = next((value for token, value in (
+                ("左边", SpatialRelationType.LEFT_OF), ("左侧", SpatialRelationType.LEFT_OF),
+                ("右边", SpatialRelationType.RIGHT_OF), ("右侧", SpatialRelationType.RIGHT_OF),
+                ("前面", SpatialRelationType.FRONT_OF), ("后面", SpatialRelationType.BEHIND),
+            ) if suffix.startswith(token)), None)
+            if relation is not None and any(
+                token in suffix.casefold()
+                for token in dialogue_subject_tokens.get(dialogue_spec[0], (dialogue_spec[0],))
+            ):
+                dialogue_relative = relation
 
         def quantity_for(token):
             match = re.search(r"(一|两|二|三|四|五|六|七|八|九|十|[1-9][0-9]*)个?" + re.escape(token), text)
@@ -86,15 +112,19 @@ class FakeTaskUnderstandingProvider:
             return values[value] if value in values else int(value)
 
         def quantity_mode_for(token):
-            if any(marker in text for marker in ("中", "其中", "靠近", "最远", "最近")):
-                return QuantityMode.CANDIDATE_POOL
             if any(marker in text for marker in ("都", "全部", "每个", "每只", "each", "all")):
                 return QuantityMode.ALL
-            return QuantityMode.ALL if quantity_for(token) > 1 else QuantityMode.SINGLE
+            count = quantity_for(token)
+            if count > 1 and any(marker in text for marker in ("中", "其中")):
+                return QuantityMode.CANDIDATE_POOL
+            return QuantityMode.ALL if count > 1 else QuantityMode.SINGLE
 
-        def add(eid, name, category, color=None, count=1, quantity_mode=QuantityMode.SINGLE):
-            if not any(entity.id == eid for entity in entities):
-                entities.append(ParseEntity(id=eid, name=name, category=category, color=color, count=count, quantity_mode=quantity_mode))
+        def add(eid, name, category, color=None, count=1, quantity_mode=QuantityMode.SINGLE, dialogue_ref=False):
+            existing = next((entity for entity in entities if entity.id == eid), None)
+            if existing is None:
+                entities.append(ParseEntity(id=eid, name=name, category=category, dialogue_ref=dialogue_ref, color=color, count=count, quantity_mode=quantity_mode))
+            elif dialogue_ref:
+                existing.dialogue_ref = True
 
         if "红" in text or "red" in low:
             if "球" in text or "ball" in low:
@@ -107,6 +137,9 @@ class FakeTaskUnderstandingProvider:
         ):
             add("blue_box_01", "blue box", "container", "blue")
         if "黄" in text or "yellow" in low: add("yellow_cube_01", "yellow cube", "cube", "yellow")
+        if ("球" in text and "棒球" not in text) or re.search(r"\bball\b", low):
+            if not any(entity.category == "ball" for entity in entities):
+                add("ball_01", "ball", "ball")
         if ("盒" in text or "box" in low) and not any(entity.category == "container" for entity in entities):
             add("open_box_01", "open box", "container", None)
         if "按钮" in text or "button" in low: add("button_01", "button", "button")
@@ -120,9 +153,17 @@ class FakeTaskUnderstandingProvider:
                 "container",
                 "blue",
             )
+        if dialogue_relative is not None and dialogue_spec is not None:
+            name, category = dialogue_spec
+            add(f"{name}_01", name, category)
+            add(f"{name}_dialogue_ref", name, category, dialogue_ref=True)
         for token, name, category in (("苹果", "apple", "fruit"), ("香蕉", "banana", "fruit"), ("棒球", "baseball", "ball"), ("篮子", "basket", "container"), ("杯子", "cup", "container"), ("魔方", "rubiks cube", "cube"), ("海绵", "sponge", "sponge"), ("勺子", "spoon", "utensil"), ("糖盒", "sugar box", "package")):
             if token in text or token in low:
-                add(f"{name.replace(' ', '_')}_01", name, category, count=quantity_for(token), quantity_mode=quantity_mode_for(token))
+                add(
+                    f"{name.replace(' ', '_')}_01", name, category,
+                    count=quantity_for(token), quantity_mode=quantity_mode_for(token),
+                    dialogue_ref=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_relative is None),
+                )
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
         for label in ("a", "b", "c"):
@@ -139,6 +180,15 @@ class FakeTaskUnderstandingProvider:
         has_right = any(token in low for token in ("右", "东", "right", "east"))
         pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "往左", "往右", "往前", "往后", "往上", "往下", "move left", "move right", "move front", "move back", "move up", "move down"))
         spatial_selector_subjects: set[str] = set()
+        if dialogue_relative is not None and dialogue_spec is not None:
+            name, _ = dialogue_spec
+            subject_id = f"{name}_01"
+            reference_id = f"{name}_dialogue_ref"
+            relations.append(ParseRelation(
+                scope="selection", subject=subject_id,
+                relation=dialogue_relative, reference=reference_id,
+            ))
+            spatial_selector_subjects.add(subject_id)
         # Entity corner selectors are planar: 上/下 in 左上/左下 means
         # front/back, never the world Z axis.  Resolve each selector against
         # the nearest entity name so source and destination can use different
@@ -208,6 +258,19 @@ class FakeTaskUnderstandingProvider:
                 if marker in text:
                     relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=relation))
                     break
+        ranking_relations = {
+            SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
+            SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
+            SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
+            SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
+        }
+        ranking_subjects = {
+            relation.subject for relation in relations
+            if relation.scope == "selection" and relation.relation in ranking_relations
+        }
+        for entity in entities:
+            if entity.id in ranking_subjects:
+                entity.quantity_mode = QuantityMode.CANDIDATE_POOL
         if not spatial_selector_subjects and not pure_motion:
             for tokens, relation in ((('前', 'north', 'front'), SpatialRelationType.FRONT), (('后', 'south', 'back'), SpatialRelationType.BACK), (('上', 'above', 'up'), SpatialRelationType.UP), (('下', 'below', 'down'), SpatialRelationType.DOWN)):
                 if (
