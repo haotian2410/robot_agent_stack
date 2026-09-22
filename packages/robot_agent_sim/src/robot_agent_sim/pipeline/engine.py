@@ -20,6 +20,7 @@ from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded, ModelCallM
 from ..models.fake import FakeSkillPlanningProvider, FakeTaskUnderstandingProvider, FakeVisionGroundingProvider
 from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
 from ..models.task_understanding import TaskParseLLMOutput, TaskUnderstandingRequest, enrich_task
+from ..models.motion_policy import MotionPolicy
 from ..models.vision_grounding import VisionGroundingRequest, VisionQuery
 from ..planning.context_builder import build_planner_context
 from ..planning.recipe_planner import RecipePlanner
@@ -46,12 +47,13 @@ class PipelineResult(BaseModel):
 
 
 class PipelineEngine:
-    def __init__(self, understanding=None, vision=None, planner=None, asset_registry=None):
+    def __init__(self, understanding=None, vision=None, planner=None, asset_registry=None, motion_policy: MotionPolicy | None = None):
         self.understanding = understanding or FakeTaskUnderstandingProvider()
         self.vision = vision or FakeVisionGroundingProvider()
         self.planner = planner or FakeSkillPlanningProvider()
         self.assets = asset_registry or AssetRegistry()
         self.backend = MujocoSceneBackend()
+        self.motion_policy = motion_policy or MotionPolicy()
 
     def understand_turn(self, instruction: str) -> TaskParseLLMOutput:
         """Run the one Task Understanding call shared by turn routing and planning."""
@@ -95,7 +97,7 @@ class PipelineEngine:
             self._capture(budget, "task_understanding", self.understanding)
             if parsed.turn_kind != TurnKind.ROBOT_TASK:
                 raise ValueError(f"turn kind {parsed.turn_kind.value} must be handled by SceneSession")
-            intent = enrich_task(parsed, instruction)
+            intent = enrich_task(parsed, instruction, self.motion_policy)
             if intent.status != TaskStatus.ACCEPTED:
                 return self._write_result(PipelineResult(task_intent=intent.model_dump(mode="json"), status=intent.status.value, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route), out)
             explicit_entity_id = next((op.source or op.target for op in intent.operations if op.source or op.target), None) if explicit_object_id else None
@@ -289,6 +291,10 @@ class PipelineEngine:
                 validate_semantic_plan(skill, task, context, REGISTRY)
             result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), grounded_task=task.model_dump(mode="json"), visual_grounding=visual_grounding, skill_plan=skill.model_dump(mode="json"), model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, source_scene=str((xml_path if scene is None else Path(scene)).resolve()), interaction_registry=str(generated_interactions) if scene is None else (str(Path(interaction_registry).resolve()) if interaction_registry else None))
             result.artifacts["asset_bindings.json"] = str(out / "asset_bindings.json")
+            if intent.semantic_repairs:
+                repairs_path = out / "semantic_repairs.json"
+                repairs_path.write_text(json.dumps(intent.semantic_repairs, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.artifacts["semantic_repairs.json"] = str(repairs_path)
             result.artifacts.update(planner_artifacts)
             Path(result.artifacts["asset_bindings.json"]).write_text(json.dumps(asset_bindings, ensure_ascii=False, indent=2), encoding="utf-8")
             self._add_observation_artifacts(result.artifacts, observation)

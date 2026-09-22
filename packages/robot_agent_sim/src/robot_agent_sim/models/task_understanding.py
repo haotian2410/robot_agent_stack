@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType
 from ..contracts.turn import SceneEditIntent, SceneQueryIntent, TurnKind
+from .motion_policy import MotionPolicy
 
 
 class StrictModel(BaseModel):
@@ -100,7 +101,7 @@ _EXPLICIT_MOTION_DIRECTIONS = (
 )
 
 
-def _instruction_motion(instruction: str) -> tuple[str | None, float | None]:
+def _instruction_motion(instruction: str) -> tuple[str | None, float | None, bool]:
     """Recover an explicit directional displacement from the user's text.
 
     Local language models occasionally classify “把苹果往右移动一点” as a
@@ -116,19 +117,23 @@ def _instruction_motion(instruction: str) -> tuple[str | None, float | None]:
         None,
     )
     if direction is None:
-        return None, None
+        return None, None, False
     match = re.search(r"(\d+(?:\.\d+)?)\s*(厘米|cm|米|m)", instruction, re.IGNORECASE)
     if match is None:
-        return direction, 0.10
+        return direction, None, True
     distance = float(match.group(1))
     if match.group(2).casefold() in {"厘米", "cm"}:
         distance /= 100.0
-    return direction, distance
+    return direction, distance, False
 
 
-def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
-    text_direction, text_distance = _instruction_motion(instruction)
+def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: MotionPolicy | None = None) -> TaskIntent:
+    policy = motion_policy or MotionPolicy()
+    text_direction, text_distance, text_is_vague = _instruction_motion(instruction)
     has_model_move = any(operation.type == "move" for operation in parsed.operations)
+    explicit_move_count = sum(1 for pattern, _ in _EXPLICIT_MOTION_DIRECTIONS if re.search(pattern, instruction))
+    parsed_move_count = sum(1 for operation in parsed.operations if operation.type == "move")
+    repairs: list[dict[str, object]] = []
     operations = []
     for index, op in enumerate(parsed.operations):
         # A single grasp/locate result for an explicit displacement is a common
@@ -141,14 +146,22 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
             and op.type in {"grasp", "locate"}
         )
         operation_type = "move" if promote_to_move else op.type
-        direction = op.motion_direction or (
-            parsed.raw_direction if operation_type == "move" else None
-        ) or (text_direction if operation_type == "move" else None)
-        distance_m = op.distance_m or parsed.distance_m or (
-            text_distance if operation_type == "move" else None
-        )
-        if distance_m is None and operation_type == "move" and direction:
-            distance_m = 0.10
+        model_direction = op.motion_direction or (parsed.raw_direction if operation_type == "move" and parsed_move_count == 1 else None)
+        model_distance = op.distance_m or (parsed.distance_m if operation_type == "move" and parsed_move_count == 1 else None)
+        direction = model_direction
+        distance_m = model_distance
+        if operation_type == "move" and text_direction is not None and explicit_move_count == 1:
+            if model_direction != text_direction and model_direction is not None:
+                repairs.append({"field": f"op-{index + 1}.motion_direction", "model_value": model_direction, "text_value": text_direction, "chosen": text_direction, "reason": "explicit_user_constraint"})
+            direction = text_direction
+            if text_distance is not None and model_distance != text_distance:
+                repairs.append({"field": f"op-{index + 1}.distance_m", "model_value": model_distance, "text_value": text_distance, "chosen": text_distance, "reason": "explicit_user_constraint"})
+            distance_m = text_distance
+        if operation_type == "move" and direction is None and parsed_move_count > 1:
+            raise ValueError("task_semantic_invalid: every move operation requires operation-local motion_direction")
+        if operation_type == "move" and direction is not None and distance_m is None:
+            distance_m = policy.default_relative_distance_m
+            repairs.append({"field": f"op-{index + 1}.distance_m", "model_value": None, "chosen": distance_m, "reason": "default_small_motion_policy"})
         target = op.target
         source = op.source
         if promote_to_move:
@@ -174,6 +187,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str) -> TaskIntent:
         entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color, count=e.count) for e in parsed.entities],
         operations=operations,
         spatial_relations=[SpatialRelation(scope=r.scope, subject=r.subject, relation=r.relation, reference=r.reference) for r in parsed.relations],
-        raw_direction=(parsed.raw_direction or text_direction) if parsed.status == "accepted" else None,
+        raw_direction=text_direction or (parsed.raw_direction if parsed_move_count <= 1 else None) if parsed.status == "accepted" else None,
+        semantic_repairs=repairs,
         explanation=messages.get(parsed.status, ""),
     )

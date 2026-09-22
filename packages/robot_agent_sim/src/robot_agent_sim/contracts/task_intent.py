@@ -110,6 +110,7 @@ class TaskIntent(BaseModel):
     operations: list[Operation] = Field(default_factory=list)
     spatial_relations: list[SpatialRelation] = Field(default_factory=list)
     raw_direction: Direction | None = None
+    semantic_repairs: list[dict[str, object]] = Field(default_factory=list)
     explanation: str = ""
 
     @model_validator(mode="after")

@@ -19,7 +19,7 @@ motion direction 仅允许 left/right/front/back/up/down；东=right、西=left�
 一句话可以同时包含实体 selector 和 motion direction，例如“把左边的棒球向右移动”应给棒球 selection relation=left，并给 operation 的 raw_direction=right。
 相对定位（如“在机械臂末端左上方找个点”“在盒子右侧找个位置”）使用 locate operation 加现有 selection relations 表达，不填写 raw_direction，也不要输出世界坐标。
 不支持的任务返回 unsupported_task。
-“把苹果向右移动一点”应返回 move operation、raw_direction=right、distance_m=0.10；动作方向和距离必须同时写入 move operation。禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
+“把苹果向右移动一点”应返回 move operation、raw_direction=right、distance_m=null；“一点”的数值由 Python motion policy 决定。若有多个 move operation，方向和距离必须逐 operation 填写，不得依赖顶层 raw_direction/distance_m 广播。禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
 
 对常见搬运指令必须返回 accepted、turn_kind=robot_task，并把动作拆成一个 pick_and_place operation。
 例如“把红色方块放进蓝色盒子”应返回：

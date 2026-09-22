@@ -10,7 +10,8 @@ from robot_agent_sim.contracts.task_intent import (
     TaskStatus,
     TaskType,
 )
-from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
+from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput, enrich_task
+from robot_agent_sim.models.motion_policy import MotionPolicy
 from robot_agent_sim.pipeline.engine import PipelineEngine
 
 
@@ -59,3 +60,34 @@ def test_conflicting_relations_are_clarification_required(tmp_path):
 
     result = PipelineEngine(understanding=ConflictingProvider()).plan("抓苹果", output_dir=tmp_path)
     assert result.status == "clarification_required"
+
+
+def test_explicit_motion_text_overrides_conflicting_model_and_records_repair():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[ParseEntity(id="apple", name="apple", category="fruit")],
+        operations=[ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.5)],
+        raw_direction="left", distance_m=0.5,
+    )
+    intent = enrich_task(parsed, "把苹果向右移动5厘米", MotionPolicy(default_relative_distance_m=0.2))
+    operation = intent.operations[0]
+    assert operation.motion_direction.value == "right"
+    assert operation.distance_m == 0.05
+    assert len(intent.semantic_repairs) == 2
+
+
+def test_multiple_moves_cannot_broadcast_top_level_direction():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[
+            ParseEntity(id="apple", name="apple", category="fruit"),
+            ParseEntity(id="banana", name="banana", category="fruit"),
+        ],
+        operations=[
+            ParseOperation(type="move", target="apple"),
+            ParseOperation(type="move", target="banana"),
+        ],
+        raw_direction="right",
+    )
+    with pytest.raises(ValueError, match="every move operation requires operation-local"):
+        enrich_task(parsed, "先移动苹果，再移动香蕉")
