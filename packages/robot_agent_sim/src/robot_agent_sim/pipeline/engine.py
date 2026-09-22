@@ -97,6 +97,9 @@ class PipelineEngine:
             budget.consume("task_understanding")
             parsed = parsed_turn or self.understand_turn(instruction)
             self._capture(budget, "task_understanding", self.understanding)
+            raw_task_path = out / "raw_task_understanding.json"
+            raw_task = getattr(self.understanding, "last_raw_values", {}).get("task_understanding", parsed.model_dump(mode="json"))
+            raw_task_path.write_text(json.dumps(raw_task, ensure_ascii=False, indent=2), encoding="utf-8")
             if parsed.turn_kind != TurnKind.ROBOT_TASK:
                 raise ValueError(f"turn kind {parsed.turn_kind.value} must be handled by SceneSession")
             intent = enrich_task(parsed, instruction, self.motion_policy)
@@ -297,13 +300,24 @@ class PipelineEngine:
                 planner_artifacts["raw_skill_plan.json"] = str(raw_path)
                 skill = enrich_skill_plan(raw_plan, task)
                 validate_semantic_plan(skill, task, context, REGISTRY)
+                validation_path = out / "semantic_plan_validation.json"
+                validation_path.write_text(json.dumps({"status": "accepted"}, ensure_ascii=False, indent=2), encoding="utf-8")
             result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), grounded_task=task.model_dump(mode="json"), visual_grounding=visual_grounding, skill_plan=skill.model_dump(mode="json"), model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, source_scene=str((xml_path if scene is None else Path(scene)).resolve()), interaction_registry=str(generated_interactions) if scene is None else (str(Path(interaction_registry).resolve()) if interaction_registry else None))
             result.artifacts["asset_bindings.json"] = str(out / "asset_bindings.json")
+            result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
+            if "validation_path" in locals():
+                result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             if intent.semantic_repairs:
                 repairs_path = out / "semantic_repairs.json"
                 repairs_path.write_text(json.dumps(intent.semantic_repairs, ensure_ascii=False, indent=2), encoding="utf-8")
                 result.artifacts["semantic_repairs.json"] = str(repairs_path)
             result.artifacts.update(planner_artifacts)
+            if "raw_task_path" in locals():
+                result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
+            if planner_used == "qwen":
+                validation_path = out / "semantic_plan_validation.json"
+                validation_path.write_text(json.dumps({"status": status, "error": message}, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             Path(result.artifacts["asset_bindings.json"]).write_text(json.dumps(asset_bindings, ensure_ascii=False, indent=2), encoding="utf-8")
             self._add_observation_artifacts(result.artifacts, observation)
             if scene is None:
