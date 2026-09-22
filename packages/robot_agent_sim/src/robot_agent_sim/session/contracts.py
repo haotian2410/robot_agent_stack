@@ -42,6 +42,9 @@ class SemanticObject(BaseModel):
     attributes: dict[str, str] = {}
     source: str = "authored"
     confidence: float | None = None
+    semantic_confidence: float | None = None
+    identity_iou: float | None = None
+    last_verified_world_version: int | None = None
 
 
 class SemanticMap(BaseModel):

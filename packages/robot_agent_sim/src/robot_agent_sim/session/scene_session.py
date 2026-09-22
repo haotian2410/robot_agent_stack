@@ -284,10 +284,17 @@ class SceneSession:
             object_id = entity["object_id"]
             current = self.semantic_map.objects.get(object_id)
             if current is None:
-                current = SemanticObject(object_id=object_id, labels=[entity["semantic_name"]], source="vision", confidence=entity.get("bbox_iou"))
+                current = SemanticObject(object_id=object_id, labels=[entity["semantic_name"]], category=entity.get("category"), source="vision", identity_iou=entity.get("bbox_iou"), last_verified_world_version=self.world_version)
                 self.semantic_map.objects[object_id] = current
             elif entity.get("semantic_name") and entity["semantic_name"] not in current.labels:
                 current.labels.append(entity["semantic_name"])
+            if entity.get("category"):
+                current.category = entity["category"]
+            if entity.get("color"):
+                current.attributes["color"] = entity["color"]
+            if entity.get("bbox_iou") is not None:
+                current.identity_iou = entity["bbox_iou"]
+            current.last_verified_world_version = self.world_version
             if entity.get("grounding_method") == "vlm_iou":
                 current.source = "vision"
         state_dir = self.output_root / "state"

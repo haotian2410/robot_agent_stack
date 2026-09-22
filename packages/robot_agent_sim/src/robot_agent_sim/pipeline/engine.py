@@ -314,10 +314,6 @@ class PipelineEngine:
             result.artifacts.update(planner_artifacts)
             if "raw_task_path" in locals():
                 result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
-            if planner_used == "qwen":
-                validation_path = out / "semantic_plan_validation.json"
-                validation_path.write_text(json.dumps({"status": status, "error": message}, ensure_ascii=False, indent=2), encoding="utf-8")
-                result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             Path(result.artifacts["asset_bindings.json"]).write_text(json.dumps(asset_bindings, ensure_ascii=False, indent=2), encoding="utf-8")
             self._add_observation_artifacts(result.artifacts, observation)
             if scene is None:
@@ -359,6 +355,12 @@ class PipelineEngine:
                 failure_registry = str(Path(generated_interactions).resolve())
             result = PipelineResult(task_intent=intent.model_dump(mode="json") if intent else {"instruction": instruction}, scene_registry=registry.model_dump(mode="json") if registry else {}, status=status, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, error=str(exc), source_scene=failure_scene, interaction_registry=failure_registry)
             result.artifacts.update(planner_artifacts)
+            if "raw_task_path" in locals():
+                result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
+            if planner_used == "qwen":
+                validation_path = out / "semantic_plan_validation.json"
+                validation_path.write_text(json.dumps({"status": status, "error": message}, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             if observation is not None: self._add_observation_artifacts(result.artifacts, observation)
             return self._write_result(result, out)
 
@@ -403,6 +405,10 @@ def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, re
         matches = []
         for object_id, value in objects.items():
             if object_id not in available:
+                continue
+            if value.get("category") and value.get("category") != entity.category:
+                continue
+            if entity.color and value.get("attributes", {}).get("color") and value.get("attributes", {}).get("color") != entity.color:
                 continue
             labels = {str(object_id).casefold(), *(str(label).casefold() for label in value.get("labels", []))}
             if any(exact_name_match(token, label) for token in query for label in labels):
