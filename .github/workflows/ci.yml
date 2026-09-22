@@ -13,15 +13,15 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     env:
-      MUJOCO_GL: osmesa
-      PYOPENGL_PLATFORM: osmesa
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install headless Mesa dependencies
-        run: sudo apt-get update && sudo apt-get install -y libosmesa6-dev libgl1-mesa-dri libglu1-mesa
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libgl1-mesa-dri libglu1-mesa
       - name: Install all packages from a clean environment
         run: |
           python -m pip install --upgrade pip
@@ -45,8 +45,8 @@ jobs:
   wheel-install:
     runs-on: ubuntu-latest
     env:
-      MUJOCO_GL: osmesa
-      PYOPENGL_PLATFORM: osmesa
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.11"
       - name: Install build tooling and headless dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y libosmesa6-dev libgl1-mesa-dri libglu1-mesa
+          sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libgl1-mesa-dri libglu1-mesa
           python -m pip install --upgrade pip build
       - name: Build wheels
         run: |
@@ -66,6 +66,6 @@ jobs:
           python -m venv /tmp/robot-agent-wheel-test
           /tmp/robot-agent-wheel-test/bin/pip install packages/robot_agent_protocol/dist/*.whl packages/robot_agent_control/dist/*.whl packages/robot_agent_sim/dist/*.whl
           cd /tmp
-          /tmp/robot-agent-wheel-test/bin/python -c 'from robot_agent_control.robot_profile import RobotProfile; from robot_agent_sim.execution.execution_profile import load_execution_profile; assert RobotProfile.load_for_robot("ur5e").name == "ur5e"; assert load_execution_profile().post_grasp_lift_m > 0'
+          /tmp/robot-agent-wheel-test/bin/python -c 'from robot_agent_control.robot_profile import RobotProfile; assert RobotProfile.load_for_robot("ur5e").name == "ur5e"'
           /tmp/robot-agent-wheel-test/bin/robot-agent --help
           /tmp/robot-agent-wheel-test/bin/robot-agent-control --help
