@@ -37,6 +37,16 @@ class WorldRelationResolver:
             values = list(candidates.get(entity_id, []))
             if not values:
                 raise WorldRelationError(f"missing visual candidates for {entity_id}")
+            # Entity IDs represent distinct semantic roles.  Do not silently
+            # bind two roles to the same physical instance when the candidate
+            # providers returned overlapping sets (common for generic labels
+            # such as “object” or “apple”).
+            used_object_ids = {
+                item["object_id"] for other_id, item in selected.items() if other_id != entity_id
+            }
+            values = [item for item in values if item["object_id"] not in used_object_ids]
+            if not values:
+                raise RelationAmbiguous(f"grounding_ambiguous: distinct object assignment for {entity_id}")
             relations = [item for item in intent.spatial_relations if item.scope == "selection" and item.subject == entity_id]
             hard = [item for item in relations if item.relation not in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}]
             ranking = [item for item in relations if item.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}]

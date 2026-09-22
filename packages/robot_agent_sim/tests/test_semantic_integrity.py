@@ -144,6 +144,26 @@ def test_nearest_distance_tie_is_ambiguous():
         )
 
 
+def test_resolver_rejects_colliding_bindings_for_distinct_entities():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select two apples", task_types=[TaskType.GRASP],
+        entities=[
+            TaskEntity(entity_id="apple_a", semantic_name="apple", category="fruit"),
+            TaskEntity(entity_id="apple_b", semantic_name="apple", category="fruit"),
+        ],
+        operations=[
+            Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple_a"),
+            Operation(operation_id="op-2", task_type=TaskType.GRASP, target="apple_b", depends_on=["op-1"]),
+        ],
+    )
+    with pytest.raises(RelationAmbiguous, match="distinct object assignment"):
+        WorldRelationResolver().resolve(
+            intent,
+            {"apple_a": [{"object_id": "apple-01"}], "apple_b": [{"object_id": "apple-01"}]},
+            {"apple-01": (0.0, 0.0, 0.0)},
+        )
+
+
 def test_inside_selection_requires_and_uses_container_bounds():
     intent = TaskIntent(
         status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
