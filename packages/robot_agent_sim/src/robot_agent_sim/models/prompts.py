@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 
 
-TASK_UNDERSTANDING_PROMPT = """解析机器人任务，只输出规定 JSON。
+TASK_UNDERSTANDING_PROMPT = """解析一次用户输入，只输出规定 JSON。每次只能选择一个 turn_kind：
+- robot_task：需要机器人执行的任务；
+- scene_edit：增加、删除或重定位场景实体，填写 scene_edit，entities/operations/relations 留空；
+- scene_query：询问当前场景数量、位置或状态，scene_edit 为 null，entities/operations/relations 留空；
+- session_control：会话控制，scene_edit 为 null，entities/operations/relations 留空。
+这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。
 支持 locate/search/move/grasp/release/pick_and_place/press/open/close。
 open/close 的 target 是门或抽屉，reference 是对应把手；不要把 open/close 当成底层控制指令。
 必须区分 motion direction 与 entity spatial selector。
@@ -16,9 +21,11 @@ motion direction 仅允许 left/right/front/back/up/down；东=right、西=left�
 不支持的任务返回 unsupported_task。
 “把苹果向右移动一点”应返回 move operation、raw_direction=right、distance_m=0.10；动作方向和距离必须同时写入 move operation。禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
 
-对常见搬运指令必须返回 accepted，并把动作拆成一个 pick_and_place operation。
+对常见搬运指令必须返回 accepted、turn_kind=robot_task，并把动作拆成一个 pick_and_place operation。
 例如“把红色方块放进蓝色盒子”应返回：
-{"status":"accepted","entities":[{"id":"red_block","name":"红色方块","category":"object","color":"red"},{"id":"blue_box","name":"蓝色盒子","category":"container","color":"blue"}],"operations":[{"type":"pick_and_place","source":"red_block","destination":"blue_box"}],"relations":[],"raw_direction":null,"raw_task":null}
+{"status":"accepted","turn_kind":"robot_task","scene_edit":null,"entities":[{"id":"red_block","name":"红色方块","category":"object","color":"red"},{"id":"blue_box","name":"蓝色盒子","category":"container","color":"blue"}],"operations":[{"type":"pick_and_place","source":"red_block","destination":"blue_box"}],"relations":[],"raw_direction":null,"raw_task":null}
+例如“在篮子右边增加一个香蕉”应返回：
+{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":"right_of","reference":"basket"},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
 例如“打开柜门”应返回 open operation，其中 target 是 cabinet_door、reference 是 cabinet_handle。
 实体 id 使用简短稳定的 snake_case；source/destination/target/reference 必须引用 entities 中的 id。"""
 

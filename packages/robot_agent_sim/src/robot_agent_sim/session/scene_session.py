@@ -8,15 +8,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from robot_agent_protocol import CommandDocument, ExecutionBundle, SkillCommand, scene_sha256
-
 from ..execution.compiler import compile_directory
 from ..execution.session_client import SessionExecutorClient
 from ..pipeline.engine import PipelineEngine, PipelineResult
 from ..scene.mutator import SceneMutator
 from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
-from .contracts import DialogueState, SceneEditIntent, SceneEditType, SemanticMap, SemanticObject, WorldState
+from .contracts import DialogueState, SceneEditIntent, SceneEditType, SemanticMap, SemanticObject, TurnKind, WorldState
 
 
 class SceneSession:
@@ -51,14 +49,22 @@ class SceneSession:
         self.turn_index += 1
         turn_dir = self.output_root / "turns" / f"{self.turn_index:04d}"
         turn_dir.mkdir(parents=True, exist_ok=True)
-        edit = self._parse_scene_edit(instruction)
-        if edit is not None:
-            return self._run_scene_edit(instruction, edit, turn_dir)
-        query = self._run_scene_query(instruction)
-        if query is not None:
+        # Resolve stable dialogue referents before the single understanding
+        # call; the parser sees the same semantic instruction that planning
+        # will consume, while DialogueState still records the original text.
+        task_instruction = self._resolve_dialogue_instruction(instruction)
+        parsed_turn = self.engine.understand_turn(task_instruction)
+        if parsed_turn.turn_kind == TurnKind.SCENE_EDIT:
+            if parsed_turn.status != "accepted" or parsed_turn.scene_edit is None:
+                raise ValueError(parsed_turn.raw_task or "invalid scene edit")
+            return self._run_scene_edit(instruction, parsed_turn.scene_edit, turn_dir)
+        if parsed_turn.turn_kind == TurnKind.SCENE_QUERY:
+            query = self._run_scene_query(instruction) or "当前场景状态尚未初始化。"
             self._record_dialogue(instruction)
             self._write_session()
             return {"status": "query_answer", "turn": self.turn_index, "turn_type": "scene_query", "answer": query, "scene_version": self.scene_version, "world_version": self.world_version}
+        if parsed_turn.turn_kind == TurnKind.SESSION_CONTROL:
+            raise ValueError("session control is not supported by run_turn")
         if self.scene_path is None:
             scene = None
             self.origin = "uploaded" if interaction_registry else "generated"
@@ -81,7 +87,6 @@ class SceneSession:
                 instance_index_path=Path(live["observation"]["instances_path"]),
                 instances=[InstanceObservation.model_validate(item) for item in live["observation"]["instances"]],
             )
-        task_instruction = self._resolve_dialogue_instruction(instruction)
         plan_kwargs = dict(
             robot=self.robot,
             interaction_registry=registry,
@@ -91,6 +96,7 @@ class SceneSession:
             live_observation=live_observation,
             semantic_map=self.semantic_map.model_dump(mode="json"),
             explicit_object_id=self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) else None,
+            parsed_turn=parsed_turn,
         )
         if self.scene_version == 0:
             result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)
@@ -181,20 +187,6 @@ class SceneSession:
         self._record_dialogue(instruction)
         self._write_session()
         return {"status": "scene_updated", "turn": self.turn_index, "turn_type": "scene_edit", "patch": patch, "scene_version": self.scene_version, "world_version": self.world_version, "runtime_reloaded": True, "state_restored": True}
-
-    @staticmethod
-    def _parse_scene_edit(instruction: str) -> SceneEditIntent | None:
-        operation = SceneEditType.ADD if re.search(r"增加|添加|加(?:一个|一只|个)", instruction) else (SceneEditType.REMOVE if re.search(r"删除|移除", instruction) else None)
-        if operation is None:
-            return None
-        names = (("香蕉", "banana", "fruit"), ("苹果", "apple", "fruit"), ("棒球", "baseball", "ball"))
-        matched = next(((en, category) for zh, en, category in names if zh in instruction or en in instruction.casefold()), None)
-        if matched is None:
-            raise ValueError("scene edit entity is unsupported or has no asset")
-        semantic_name, category = matched
-        relation = "right_of" if "右" in instruction else ("left_of" if "左" in instruction else "right_of")
-        reference = "basket" if "篮" in instruction else ""
-        return SceneEditIntent(operation=operation, semantic_name=semantic_name, category=category, relation=relation, reference=reference)
 
     def _resolve_semantic_object(self, query: str) -> str:
         normalized = query.casefold()

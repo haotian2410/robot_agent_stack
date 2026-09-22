@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType
+from ..contracts.turn import SceneEditIntent, TurnKind
 
 
 class StrictModel(BaseModel):
@@ -50,6 +51,8 @@ class ParseRelation(StrictModel):
 
 class TaskParseLLMOutput(StrictModel):
     status: Literal["accepted", "unsupported_task", "direction_clarification_required"]
+    turn_kind: TurnKind = TurnKind.ROBOT_TASK
+    scene_edit: SceneEditIntent | None = None
     entities: list[ParseEntity] = Field(default_factory=list)
     operations: list[ParseOperation] = Field(default_factory=list)
     relations: list[ParseRelation] = Field(default_factory=list)
@@ -59,8 +62,14 @@ class TaskParseLLMOutput(StrictModel):
 
     @model_validator(mode="after")
     def valid_status(self):
-        if self.status == "accepted" and (not self.entities or not self.operations):
+        if self.status == "accepted" and self.turn_kind == TurnKind.ROBOT_TASK and (not self.entities or not self.operations):
             raise ValueError("accepted parse requires entities and operations")
+        if self.status == "accepted" and self.turn_kind == TurnKind.SCENE_EDIT and self.scene_edit is None:
+            raise ValueError("scene_edit turn requires scene_edit intent")
+        if self.turn_kind != TurnKind.ROBOT_TASK and (self.entities or self.operations or self.relations):
+            raise ValueError("non-robot turn must not contain a robot plan")
+        if self.turn_kind != TurnKind.SCENE_EDIT and self.scene_edit is not None:
+            raise ValueError("scene_edit intent is only valid for scene_edit turns")
         if self.status != "accepted" and (self.entities or self.operations or self.relations):
             raise ValueError("rejected parse must not include a plan")
         if self.status == "accepted" and self.raw_direction is not None and self.raw_direction not in {"left", "right", "front", "back", "up", "down"}:

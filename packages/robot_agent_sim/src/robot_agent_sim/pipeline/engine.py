@@ -10,6 +10,7 @@ from ..assets.resolver import AssetResolver
 from ..backends.mujoco.backend import MujocoSceneBackend
 from ..contracts.grounded_task import GroundedEntity, GroundedTask
 from ..contracts.task_intent import TaskStatus
+from ..contracts.turn import TurnKind
 from ..grounding.iou import match_detections
 from ..grounding.segmentation import SceneObservation
 from ..grounding.interaction_registry import ground_partial_with_interaction_registry, ground_with_interaction_registry
@@ -18,7 +19,7 @@ from ..execution.interaction_registry_builder import build_generated_registry
 from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded
 from ..models.fake import FakeSkillPlanningProvider, FakeTaskUnderstandingProvider, FakeVisionGroundingProvider
 from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
-from ..models.task_understanding import TaskUnderstandingRequest, enrich_task
+from ..models.task_understanding import TaskParseLLMOutput, TaskUnderstandingRequest, enrich_task
 from ..models.vision_grounding import VisionGroundingRequest, VisionQuery
 from ..planning.context_builder import build_planner_context
 from ..planning.recipe_planner import RecipePlanner
@@ -52,6 +53,10 @@ class PipelineEngine:
         self.assets = asset_registry or AssetRegistry()
         self.backend = MujocoSceneBackend()
 
+    def understand_turn(self, instruction: str) -> TaskParseLLMOutput:
+        """Run the one Task Understanding call shared by turn routing and planning."""
+        return self.understanding.understand(TaskUnderstandingRequest(instruction=instruction))
+
     def plan_current_scene(self, instruction: str, *, scene_path: Path, scene_registry, origin: str, **kwargs) -> PipelineResult:
         """Plan against an already initialized session scene.
 
@@ -68,7 +73,7 @@ class PipelineEngine:
             **kwargs,
         )
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -82,8 +87,10 @@ class PipelineEngine:
         planner_used = planner
         try:
             budget.consume("task_understanding")
-            parsed = self.understanding.understand(TaskUnderstandingRequest(instruction=instruction))
+            parsed = parsed_turn or self.understand_turn(instruction)
             self._capture(budget, "task_understanding", self.understanding)
+            if parsed.turn_kind != TurnKind.ROBOT_TASK:
+                raise ValueError(f"turn kind {parsed.turn_kind.value} must be handled by SceneSession")
             intent = enrich_task(parsed, instruction)
             if intent.status != TaskStatus.ACCEPTED:
                 return self._write_result(PipelineResult(task_intent=intent.model_dump(mode="json"), status=intent.status.value, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route), out)

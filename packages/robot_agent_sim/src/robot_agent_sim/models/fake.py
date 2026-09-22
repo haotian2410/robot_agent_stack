@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ..contracts.task_intent import Operation, SpatialRelationType, TaskType
+from ..contracts.turn import SceneEditIntent, SceneEditType, TurnKind
 from .skill_planning import LLMOperationPlan, LLMPlanStep, SkillPlanLLMOutput
 from .task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
 from .vision_grounding import VisionCandidate, VisionLLMOutput
@@ -15,6 +16,33 @@ class FakeTaskUnderstandingProvider:
     def understand(self, request):
         text = request.instruction.strip()
         low = text.casefold()
+        # The offline provider mirrors the single Task Understanding contract
+        # used by Qwen.  SceneSession no longer carries its own turn-kind
+        # parser, so switching providers cannot change session routing.
+        edit_operation = (
+            SceneEditType.ADD if any(token in text for token in ("增加", "添加", "加一个", "加一只"))
+            else SceneEditType.REMOVE if any(token in text for token in ("删除", "移除"))
+            else None
+        )
+        if edit_operation is not None:
+            assets = (("香蕉", "banana", "fruit"), ("苹果", "apple", "fruit"), ("棒球", "baseball", "ball"))
+            matched = next(((name, category) for zh, name, category in assets if zh in text or name in low), None)
+            if matched is None:
+                return TaskParseLLMOutput(status="unsupported_task", turn_kind=TurnKind.SCENE_EDIT, raw_task=text)
+            semantic_name, category = matched
+            return TaskParseLLMOutput(
+                status="accepted",
+                turn_kind=TurnKind.SCENE_EDIT,
+                scene_edit=SceneEditIntent(
+                    operation=edit_operation,
+                    semantic_name=semantic_name,
+                    category=category,
+                    relation="left_of" if "左" in text else "right_of",
+                    reference="basket" if "篮" in text else None,
+                ),
+            )
+        if any(token in text for token in ("几个", "多少", "数量", "在哪里", "状态")) or ("位置" in text and any(token in text for token in ("当前", "查询", "报告"))):
+            return TaskParseLLMOutput(status="accepted", turn_kind=TurnKind.SCENE_QUERY)
         diagonals = ("东北", "东南", "西北", "西南", "左前方", "右前方", "斜上方", "左上方", "右下方", "northeast", "northwest", "southeast", "southwest", "diagonal")
         motion_words = ("移动", "移到", "往左", "往右", "往前", "往后", "往上", "往下", "move")
         # Composite directions are ambiguous only when they modify the

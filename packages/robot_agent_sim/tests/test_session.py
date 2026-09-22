@@ -5,6 +5,8 @@ import pytest
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskStatus, TaskType
 from robot_agent_sim.grounding.world_relation import RelationNotSatisfied, WorldRelationResolver
 from robot_agent_sim.session import SceneSession
+from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
+from robot_agent_sim.pipeline.engine import PipelineEngine
 
 
 def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path):
@@ -77,6 +79,34 @@ def test_scene_edit_reloads_runtime_and_continues_with_new_object(tmp_path):
         assert final["report"]["success"] is True
         assert session.world_state.objects["banana_01"].object_id == "banana_01"
         assert (session.output_root / "turns/0002/scene_patch.json").is_file()
+    finally:
+        session.close()
+
+
+def test_turn_kind_routes_scene_edit_with_one_understanding_call(tmp_path):
+    class CountingUnderstanding:
+        def __init__(self):
+            self.delegate = FakeTaskUnderstandingProvider()
+            self.call_count = 0
+            self.calls = self.delegate.calls if hasattr(self.delegate, "calls") else []
+
+        def understand(self, request):
+            self.call_count += 1
+            return self.delegate.understand(request)
+
+    understanding = CountingUnderstanding()
+    session = SceneSession(
+        robot="ur5e", output_root=tmp_path, viewer_mode="headless",
+        engine=PipelineEngine(understanding=understanding),
+    )
+    try:
+        session.run_turn("把苹果放进篮子")
+        assert understanding.call_count == 1
+        edit = session.run_turn("在篮子右边增加一个香蕉")
+        assert edit["turn_type"] == "scene_edit"
+        assert understanding.call_count == 2
+        session.run_turn("把刚才那个香蕉放进篮子")
+        assert understanding.call_count == 3
     finally:
         session.close()
 
