@@ -9,9 +9,11 @@ from robot_agent_sim.contracts.task_intent import (
     TaskIntent,
     TaskStatus,
     TaskType,
+    QuantityMode,
 )
 from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput, enrich_task
 from robot_agent_sim.models.motion_policy import MotionPolicy
+from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.pipeline.engine import PipelineEngine
 
 
@@ -91,3 +93,18 @@ def test_multiple_moves_cannot_broadcast_top_level_direction():
     )
     with pytest.raises(ValueError, match="every move operation requires operation-local"):
         enrich_task(parsed, "先移动苹果，再移动香蕉")
+
+
+def test_all_quantity_is_rejected_instead_of_silently_executing_one():
+    request = type("Request", (), {"instruction": "把三个苹果都放进篮子"})()
+    parsed = FakeTaskUnderstandingProvider().understand(request)
+    intent = enrich_task(parsed, request.instruction)
+    assert intent.status.value == "unsupported_multi_object_execution"
+    assert intent.operations == []
+
+
+def test_candidate_pool_quantity_remains_supported():
+    request = type("Request", (), {"instruction": "把三个苹果中靠近篮子的苹果放进篮子"})()
+    parsed = FakeTaskUnderstandingProvider().understand(request)
+    assert parsed.entities[0].quantity_mode == QuantityMode.CANDIDATE_POOL
+    assert enrich_task(parsed, request.instruction).status == TaskStatus.ACCEPTED

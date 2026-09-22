@@ -6,7 +6,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType
+from ..contracts.task_intent import Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
 from ..contracts.turn import SceneEditIntent, SceneQueryIntent, TurnKind
 from .motion_policy import MotionPolicy
 
@@ -21,6 +21,7 @@ class ParseEntity(StrictModel):
     category: str = Field(min_length=1)
     color: str | None = None
     count: int = Field(default=1, ge=1, le=100)
+    quantity_mode: QuantityMode = QuantityMode.SINGLE
 
 
 class ParseOperation(StrictModel):
@@ -182,9 +183,15 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
         "direction_clarification_required": "当前仅支持上下、左右、前后，请明确选择其中一个方向。",
         "unsupported_task": "当前不支持该任务类型。",
     }
+    if any(entity.count > 1 and entity.quantity_mode == QuantityMode.ALL for entity in parsed.entities):
+        return TaskIntent(
+            status=TaskStatus.UNSUPPORTED_MULTI_OBJECT_EXECUTION,
+            instruction=instruction,
+            explanation="当前执行器暂不支持一次性对多个同类物体重复执行任务，请一次指定一个物体或使用候选筛选条件。",
+        )
     return TaskIntent(
         status=parsed.status, instruction=instruction, task_types=task_types,
-        entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color, count=e.count) for e in parsed.entities],
+        entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color, count=e.count, quantity_mode=e.quantity_mode) for e in parsed.entities],
         operations=operations,
         spatial_relations=[SpatialRelation(scope=r.scope, subject=r.subject, relation=r.relation, reference=r.reference) for r in parsed.relations],
         raw_direction=text_direction or (parsed.raw_direction if parsed_move_count <= 1 else None) if parsed.status == "accepted" else None,

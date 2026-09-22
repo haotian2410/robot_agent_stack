@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ..contracts.task_intent import Operation, SpatialRelationType, TaskType
+from ..contracts.task_intent import Operation, QuantityMode, SpatialRelationType, TaskType
 from ..contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
 from .skill_planning import LLMOperationPlan, LLMPlanStep, SkillPlanLLMOutput
 from .task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
@@ -69,9 +69,16 @@ class FakeTaskUnderstandingProvider:
             value = match.group(1)
             return values[value] if value in values else int(value)
 
-        def add(eid, name, category, color=None, count=1):
+        def quantity_mode_for(token):
+            if any(marker in text for marker in ("中", "其中", "靠近", "最远", "最近")):
+                return QuantityMode.CANDIDATE_POOL
+            if any(marker in text for marker in ("都", "全部", "每个", "每只", "each", "all")):
+                return QuantityMode.ALL
+            return QuantityMode.ALL if quantity_for(token) > 1 else QuantityMode.SINGLE
+
+        def add(eid, name, category, color=None, count=1, quantity_mode=QuantityMode.SINGLE):
             if not any(entity.id == eid for entity in entities):
-                entities.append(ParseEntity(id=eid, name=name, category=category, color=color, count=count))
+                entities.append(ParseEntity(id=eid, name=name, category=category, color=color, count=count, quantity_mode=quantity_mode))
 
         if "红" in text or "red" in low:
             if "球" in text or "ball" in low:
@@ -99,7 +106,7 @@ class FakeTaskUnderstandingProvider:
             )
         for token, name, category in (("苹果", "apple", "fruit"), ("香蕉", "banana", "fruit"), ("棒球", "baseball", "ball"), ("篮子", "basket", "container"), ("杯子", "cup", "container"), ("魔方", "rubiks cube", "cube"), ("海绵", "sponge", "sponge"), ("勺子", "spoon", "utensil"), ("糖盒", "sugar box", "package")):
             if token in text or token in low:
-                add(f"{name.replace(' ', '_')}_01", name, category, count=quantity_for(token))
+                add(f"{name.replace(' ', '_')}_01", name, category, count=quantity_for(token), quantity_mode=quantity_mode_for(token))
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
         for label in ("a", "b", "c"):

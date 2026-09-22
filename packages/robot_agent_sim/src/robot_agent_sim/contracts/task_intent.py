@@ -11,6 +11,7 @@ class TaskStatus(StrEnum):
     UNSUPPORTED_TASK = "unsupported_task"
     DIRECTION_CLARIFICATION_REQUIRED = "direction_clarification_required"
     INVALID = "invalid"
+    UNSUPPORTED_MULTI_OBJECT_EXECUTION = "unsupported_multi_object_execution"
 
 
 class TaskType(StrEnum):
@@ -24,6 +25,12 @@ class TaskType(StrEnum):
     OPEN = "open"
     CLOSE = "close"
     MIXED = "mixed"
+
+
+class QuantityMode(StrEnum):
+    SINGLE = "single"
+    CANDIDATE_POOL = "candidate_pool"
+    ALL = "all"
 
 
 class Direction(StrEnum):
@@ -61,6 +68,7 @@ class TaskEntity(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=20)
     color: str | None = None
     count: int = Field(default=1, ge=1, le=100)
+    quantity_mode: QuantityMode = QuantityMode.SINGLE
 
 
 class SpatialRelation(BaseModel):
