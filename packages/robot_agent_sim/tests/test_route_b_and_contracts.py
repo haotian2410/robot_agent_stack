@@ -45,6 +45,7 @@ def test_route_b_auto_discovers_task_body_and_grounding_artifact(tmp_path):
     assert Path(result.artifacts["grounding_candidates.json"]).is_file()
     assert Path(result.artifacts["grounding_decision.json"]).is_file()
     assert Path(result.artifacts["raw_vision_grounding.json"]).is_file()
+    assert Path(result.artifacts["semantic_validation.json"]).is_file()
     decision = json.loads(Path(result.artifacts["grounding_decision.json"]).read_text())
     assert decision["entities"][0]["object_id"] == "scene_object_001"
     assert decision["entities"][0]["grounding_method"] == "vlm_iou"

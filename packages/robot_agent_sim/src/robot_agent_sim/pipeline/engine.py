@@ -389,7 +389,7 @@ class PipelineEngine:
             "validator": "semantic" if result.planner == "qwen" else "recipe",
             "recipe_used": result.planner == "recipe",
         }
-        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
+        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "semantic_validation.json": {"status": result.status, "error": result.error, "semantic_repairs": result.task_intent.get("semantic_repairs", []) if isinstance(result.task_intent, dict) else []}, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
         for name, payload in payloads.items():
             path = out / name
             if payload is None:
