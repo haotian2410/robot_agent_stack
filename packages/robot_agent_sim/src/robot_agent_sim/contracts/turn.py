@@ -17,7 +17,14 @@ class TurnKind(StrEnum):
 class SceneEditType(StrEnum):
     ADD = "add"
     REMOVE = "remove"
-    RELOCATE = "relocate"
+
+
+class SceneEditRelation(StrEnum):
+    LEFT_OF = "left_of"
+    RIGHT_OF = "right_of"
+    FRONT_OF = "front_of"
+    BEHIND = "behind"
+    ABOVE = "above"
 
 
 class SceneEditIntent(BaseModel):
@@ -26,7 +33,7 @@ class SceneEditIntent(BaseModel):
     semantic_name: str
     category: str
     count: int = Field(default=1, ge=1, le=20)
-    relation: str | None = None
+    relation: SceneEditRelation | None = None
     reference: str | None = None
 
 

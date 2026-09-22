@@ -69,6 +69,14 @@ class SceneSession:
             return {"status": "query_answer", "turn": self.turn_index, "turn_type": "scene_query", "answer": query, "scene_version": self.scene_version, "world_version": self.world_version}
         if parsed_turn.turn_kind == TurnKind.SESSION_CONTROL:
             raise ValueError("session control is not supported by run_turn")
+        explicit_bindings = {}
+        if referent_object_id and any(token in instruction for token in ("它", "刚才那个", "这个")):
+            reference_pronoun = any(token in instruction for token in ("放到它", "放进它", "在它", "它旁边", "它里面"))
+            operation = next((item for item in parsed_turn.operations if item.source or item.target or item.destination or item.reference), None)
+            if operation is not None:
+                role_entity = (operation.destination or operation.reference) if reference_pronoun else (operation.source or operation.target)
+                if role_entity:
+                    explicit_bindings[role_entity] = referent_object_id
         if self.scene_path is None:
             scene = None
             self.origin = "uploaded" if interaction_registry else "generated"
@@ -99,7 +107,8 @@ class SceneSession:
             world_positions={object_id: state.position for object_id, state in self.world_state.objects.items()} if self.world_state else None,
             live_observation=live_observation,
             semantic_map=self.semantic_map.model_dump(mode="json"),
-            explicit_object_id=self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) else None,
+            explicit_object_id=(self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) and not explicit_bindings else None),
+            explicit_bindings=explicit_bindings,
             parsed_turn=parsed_turn,
             planning_mode=ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL,
             held_object_id=self.world_state.held_object if self.world_state else None,
@@ -147,6 +156,8 @@ class SceneSession:
         if self.origin != "generated" or self.scene_path is None or self.control is None or self.world_state is None:
             raise ValueError("scene edit currently requires an initialized generated SceneSession")
         registry = SceneRegistry.model_validate(self.scene_registry)
+        if edit.count > 1:
+            raise ValueError("UNSUPPORTED_MULTI_OBJECT_SCENE_EDIT: count>1 is not implemented")
         positions = {key: value.position for key, value in self.world_state.objects.items()}
         mutator = SceneMutator(self.engine.assets)
         next_scene_version = self.scene_version + 1

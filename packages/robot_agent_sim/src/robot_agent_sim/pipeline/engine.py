@@ -105,8 +105,13 @@ class PipelineEngine:
             intent = enrich_task(parsed, instruction, self.motion_policy)
             if intent.status != TaskStatus.ACCEPTED:
                 return self._write_result(PipelineResult(task_intent=intent.model_dump(mode="json"), status=intent.status.value, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route), out)
-            explicit_entity_id = next((op.source or op.target for op in intent.operations if op.source or op.target), None) if explicit_object_id else None
-            ground_entities = [entity for entity in intent.entities if entity.entity_id != explicit_entity_id] if explicit_entity_id else intent.entities
+            bindings = dict(explicit_bindings or {})
+            if explicit_object_id:
+                source_entity_id = next((op.source or op.target for op in intent.operations if op.source or op.target), None)
+                if source_entity_id:
+                    bindings.setdefault(source_entity_id, explicit_object_id)
+            explicit_entity_ids = set(bindings)
+            ground_entities = [entity for entity in intent.entities if entity.entity_id not in explicit_entity_ids]
 
             if scene is None and current_registry is None:
                 assets = AssetResolver(self.assets).resolve_entities(intent.entities)
@@ -251,11 +256,12 @@ class PipelineEngine:
                             grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=choice["object_id"], body_name=instance.body_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method=method, detection_bbox=choice.get("detection_bbox"), instance_bbox=instance.bbox, bbox_iou=choice.get("bbox_iou")))
                         asset_bindings = {}
 
-            if explicit_object_id:
-                explicit_entity_id = next((op.source or op.target for op in intent.operations if op.source or op.target), None)
-                explicit_item = next((item for item in registry.objects if item.object_id == explicit_object_id), None)
-                explicit_instance = next((item for item in observation.instances if item.object_id == explicit_object_id), None)
-                if explicit_entity_id and explicit_item is not None and explicit_instance is not None:
+            if bindings:
+                for explicit_entity_id, explicit_object_id in bindings.items():
+                    explicit_item = next((item for item in registry.objects if item.object_id == explicit_object_id), None)
+                    explicit_instance = next((item for item in observation.instances if item.object_id == explicit_object_id), None)
+                    if explicit_item is None or explicit_instance is None:
+                        raise ValueError(f"dialogue binding object is missing: {explicit_object_id}")
                     grounded = [entity for entity in grounded if entity.entity_id != explicit_entity_id]
                     source_entity = next(entity for entity in intent.entities if entity.entity_id == explicit_entity_id)
                     grounded.insert(0, GroundedEntity(entity_id=explicit_entity_id, semantic_name=source_entity.semantic_name, object_id=explicit_object_id, body_name=explicit_item.body_name, model_id=explicit_item.model_id, model_name=explicit_item.model_name, category=source_entity.category, color=source_entity.color, aliases=source_entity.aliases, quantity_mode=source_entity.quantity_mode, grounding_method="dialogue_binding", instance_bbox=explicit_instance.bbox))

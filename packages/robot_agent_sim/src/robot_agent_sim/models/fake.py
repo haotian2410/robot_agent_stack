@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..contracts.task_intent import Operation, QuantityMode, SpatialRelationType, TaskType
-from ..contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
+from ..contracts.turn import SceneEditIntent, SceneEditRelation, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
 from .skill_planning import LLMOperationPlan, LLMPlanStep, SkillPlanLLMOutput
 from .task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
 from .vision_grounding import VisionCandidate, VisionLLMOutput
@@ -37,7 +37,7 @@ class FakeTaskUnderstandingProvider:
                     operation=edit_operation,
                     semantic_name=semantic_name,
                     category=category,
-                    relation="left_of" if "左" in text else "right_of",
+                    relation=SceneEditRelation.LEFT_OF if "左" in text else SceneEditRelation.RIGHT_OF,
                     reference="basket" if "篮" in text else None,
                 ),
             )
