@@ -9,7 +9,7 @@ from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.pipeline.engine import PipelineEngine
 
 
-def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path):
+def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path, monkeypatch):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
         first = session.run_turn("把两个苹果中靠近篮子的苹果放到篮子里")
@@ -20,6 +20,7 @@ def test_scene_session_reuses_runtime_and_live_world_relations(tmp_path):
         basket_position = session.world_state.objects["basket_01"].position
         assert abs(moved_position[0] - basket_position[0]) < 0.02
         assert abs(moved_position[1] - basket_position[1]) < 0.02
+        monkeypatch.setattr(session.engine.backend, "load_uploaded", lambda *_args, **_kwargs: pytest.fail("later turns must not reinitialize a session scene"))
 
         second = session.run_turn("把现在离篮子最远的苹果抓起来")
         assert session.control.process.pid == process_id
