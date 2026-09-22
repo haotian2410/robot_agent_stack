@@ -100,6 +100,11 @@ class PipelineEngine:
             raw_task_path = out / "raw_task_understanding.json"
             raw_task = getattr(self.understanding, "last_raw_values", {}).get("task_understanding", parsed.model_dump(mode="json"))
             raw_task_path.write_text(json.dumps(raw_task, ensure_ascii=False, indent=2), encoding="utf-8")
+            raw_task_text = getattr(self.understanding, "last_raw_text", {}).get("task_understanding")
+            if raw_task_text is not None:
+                (out / "raw_task_understanding.txt").write_text(raw_task_text, encoding="utf-8")
+            normalized_task_path = out / "normalized_task_parse.json"
+            normalized_task_path.write_text(json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
             if parsed.turn_kind != TurnKind.ROBOT_TASK:
                 raise ValueError(f"turn kind {parsed.turn_kind.value} must be handled by SceneSession")
             intent = enrich_task(parsed, instruction, self.motion_policy)
@@ -314,6 +319,9 @@ class PipelineEngine:
             result = PipelineResult(task_intent=intent.model_dump(mode="json"), scene_registry=registry.model_dump(mode="json"), grounded_task=task.model_dump(mode="json"), visual_grounding=visual_grounding, skill_plan=skill.model_dump(mode="json"), model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route, source_scene=str((xml_path if scene is None else Path(scene)).resolve()), interaction_registry=str(generated_interactions) if scene is None else (str(Path(interaction_registry).resolve()) if interaction_registry else None))
             result.artifacts["asset_bindings.json"] = str(out / "asset_bindings.json")
             result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
+            if (out / "raw_task_understanding.txt").is_file():
+                result.artifacts["raw_task_understanding.txt"] = str(out / "raw_task_understanding.txt")
+            result.artifacts["normalized_task_parse.json"] = str(normalized_task_path)
             if "validation_path" in locals():
                 result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             if intent.semantic_repairs:
@@ -323,6 +331,10 @@ class PipelineEngine:
             result.artifacts.update(planner_artifacts)
             if "raw_task_path" in locals():
                 result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
+            if (out / "raw_task_understanding.txt").is_file():
+                result.artifacts["raw_task_understanding.txt"] = str(out / "raw_task_understanding.txt")
+            if (out / "normalized_task_parse.json").is_file():
+                result.artifacts["normalized_task_parse.json"] = str(out / "normalized_task_parse.json")
             Path(result.artifacts["asset_bindings.json"]).write_text(json.dumps(asset_bindings, ensure_ascii=False, indent=2), encoding="utf-8")
             self._add_observation_artifacts(result.artifacts, observation)
             if scene is None:
@@ -389,7 +401,22 @@ class PipelineEngine:
             "validator": "semantic" if result.planner == "qwen" else "recipe",
             "recipe_used": result.planner == "recipe",
         }
-        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "semantic_validation.json": {"status": result.status, "error": result.error, "semantic_repairs": result.task_intent.get("semantic_repairs", []) if isinstance(result.task_intent, dict) else []}, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
+        operation_outcomes = []
+        if result.status == "accepted" and isinstance(result.skill_plan, dict):
+            operation_ids = []
+            for step in result.skill_plan.get("steps", []):
+                if step.get("operation_id") not in operation_ids:
+                    operation_ids.append(step.get("operation_id"))
+            operation_outcomes = [{"operation_id": operation_id, "result": "completed"} for operation_id in operation_ids]
+        semantic_validation = {
+            "task_intent_validation": {"status": "accepted" if result.task_intent else "missing"},
+            "grounding_validation": {"status": "accepted" if result.grounded_task else (result.status if "grounding" in result.status else "not_run")},
+            "skill_plan_validation": {"status": "accepted" if result.skill_plan else (result.status if result.planner == "qwen" else "not_run"), "operation_outcomes": operation_outcomes},
+            "semantic_repairs": result.task_intent.get("semantic_repairs", []) if isinstance(result.task_intent, dict) else [],
+            "status": result.status,
+            "error": result.error,
+        }
+        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "semantic_validation.json": semantic_validation, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
         for name, payload in payloads.items():
             path = out / name
             if payload is None:

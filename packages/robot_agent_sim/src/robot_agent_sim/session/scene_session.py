@@ -15,6 +15,7 @@ from ..models.budget import ModelCallMode
 from ..scene.mutator import SceneMutator
 from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
+from ..grounding.name_matching import exact_name_match
 from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, SessionControlType, TurnKind, WorldState
 
 
@@ -41,6 +42,7 @@ class SceneSession:
         self.dialogue_state = DialogueState()
         self.control: SessionExecutorClient | None = None
         self.paused = False
+        self.closed = False
         self.execution_history: list[dict[str, Any]] = []
         self.next_instance_index: dict[str, int] = {}
         self._write_session()
@@ -48,6 +50,8 @@ class SceneSession:
     def run_turn(self, instruction: str, *, interaction_registry: str | Path | None = None) -> dict[str, Any]:
         if not instruction.strip():
             raise ValueError("instruction cannot be empty")
+        if self.closed:
+            raise RuntimeError("SESSION_CLOSED")
         self.turn_index += 1
         turn_dir = self.output_root / "turns" / f"{self.turn_index:04d}"
         turn_dir.mkdir(parents=True, exist_ok=True)
@@ -234,12 +238,12 @@ class SceneSession:
         matches = []
         for object_id, item in self.semantic_map.objects.items():
             values = {object_id.casefold(), *(value.casefold() for value in item.labels)}
-            if any(token in value or value in token for token in tokens for value in values if token and value):
+            if any(exact_name_match(token, value) for token in tokens for value in values if token and value):
                 matches.append(object_id)
         if not matches:
             for item in self.scene_registry.get("objects", []):
                 values = {str(item.get("object_id", "")).casefold(), str(item.get("semantic_name", "")).casefold(), str(item.get("model_name", "")).casefold()}
-                if any(token in value or value in token for token in tokens for value in values if token and value):
+                if any(exact_name_match(token, value) for token in tokens for value in values if token and value):
                     matches.append(item["object_id"])
         if len(matches) != 1:
             raise ValueError(f"scene edit reference is {'missing' if not matches else 'ambiguous'}: {query} -> {matches}")
@@ -268,9 +272,12 @@ class SceneSession:
         return self.world_state
 
     def close(self) -> None:
+        if self.closed:
+            return
         if self.control is not None:
             self.control.close()
             self.control = None
+        self.closed = True
         self._write_session()
 
     def _build_semantic_map(self) -> None:
@@ -353,11 +360,11 @@ class SceneSession:
         if query.referent and explicit_object_id:
             matches = [explicit_object_id] if explicit_object_id in self.world_state.objects else []
         else:
-            semantic = (query.semantic_name or "").casefold()
+            semantic = query.semantic_name or ""
             matches = [
                 object_id for object_id, item in self.semantic_map.objects.items()
                 if object_id in self.world_state.objects
-                and (not semantic or semantic in object_id.casefold() or any(semantic in label.casefold() for label in item.labels))
+                and (not semantic or exact_name_match(semantic, object_id) or any(exact_name_match(semantic, label) for label in item.labels))
                 and (query.category is None or item.category in {None, query.category})
             ]
         label = self._zh_label(query.semantic_name or "目标")
@@ -374,7 +381,7 @@ class SceneSession:
         return f"当前{label}位置：{positions[0]}。" if positions else f"当前未找到{label}。"
 
     def _write_session(self) -> None:
-        payload = {"session_id": self.session_id, "origin": self.origin, "scene_version": self.scene_version, "world_version": self.world_version, "turn_index": self.turn_index, "paused": self.paused, "scene_path": str(self.scene_path) if self.scene_path else None, "interaction_registry": str(self.interaction_registry) if self.interaction_registry else None, "next_instance_index": self.next_instance_index, "execution_history": self.execution_history}
+        payload = {"session_id": self.session_id, "origin": self.origin, "scene_version": self.scene_version, "world_version": self.world_version, "turn_index": self.turn_index, "paused": self.paused, "closed": self.closed, "scene_path": str(self.scene_path) if self.scene_path else None, "interaction_registry": str(self.interaction_registry) if self.interaction_registry else None, "next_instance_index": self.next_instance_index, "execution_history": self.execution_history}
         (self.output_root / "session.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

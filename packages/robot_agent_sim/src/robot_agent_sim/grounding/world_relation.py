@@ -49,7 +49,12 @@ class WorldRelationResolver:
                 raise RelationAmbiguous(f"grounding_ambiguous: distinct object assignment for {entity_id}")
             relations = [item for item in intent.spatial_relations if item.scope == "selection" and item.subject == entity_id]
             hard = [item for item in relations if item.relation not in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}]
-            ranking = [item for item in relations if item.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}]
+            ranking = [item for item in relations if item.relation in {
+                SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
+                SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
+                SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
+                SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
+            }]
             for relation in hard:
                 reference_position = None
                 reference_bounds = None
@@ -58,15 +63,29 @@ class WorldRelationResolver:
                     reference_id = reference["object_id"]
                     reference_position = positions[reference_id]
                     reference_bounds = bounds.get(reference_id)
-                values = [value for value in values if self._satisfies(relation.relation, positions[value["object_id"]], reference_position, reference_bounds)]
+                values = [value for value in values if self._satisfies(relation.relation, positions[value["object_id"]], reference_position, reference_bounds, bounds.get(value["object_id"]))]
                 if not values:
                     raise RelationNotSatisfied(f"relation_not_satisfied: {entity_id} {relation.relation} {relation.reference or ''}".strip())
             for relation in ranking:
-                reference = choose(relation.reference)
-                ref_pos = positions[reference["object_id"]]
-                distances = [math.dist(positions[value["object_id"]][:2], ref_pos[:2]) for value in values]
-                best = min(distances) if relation.relation == SpatialRelationType.NEAREST else max(distances)
-                tied = [value for value, distance in zip(values, distances) if abs(distance - best) <= DISTANCE_TIE_EPSILON]
+                ref_pos = None
+                if relation.reference:
+                    reference = choose(relation.reference)
+                    ref_pos = positions[reference["object_id"]]
+                axis, reverse = {
+                    SpatialRelationType.LEFTMOST: (0, False), SpatialRelationType.RIGHTMOST: (0, True),
+                    SpatialRelationType.FRONTMOST: (1, True), SpatialRelationType.BACKMOST: (1, False),
+                    SpatialRelationType.HIGHEST: (2, True), SpatialRelationType.LOWEST: (2, False),
+                }.get(relation.relation, (None, False))
+                if axis is not None:
+                    scores = [positions[value["object_id"]][axis] for value in values]
+                    best = max(scores) if reverse else min(scores)
+                    tied = [value for value, score in zip(values, scores) if abs(score - best) <= DISTANCE_TIE_EPSILON]
+                else:
+                    if ref_pos is None:
+                        raise WorldRelationError(f"ranking relation requires reference: {relation.relation}")
+                    distances = [math.dist(positions[value["object_id"]][:2], ref_pos[:2]) for value in values]
+                    best = min(distances) if relation.relation == SpatialRelationType.NEAREST else max(distances)
+                    tied = [value for value, distance in zip(values, distances) if abs(distance - best) <= DISTANCE_TIE_EPSILON]
                 if len(tied) != 1:
                     raise RelationAmbiguous(f"grounding_ambiguous: distance tie for {entity_id} {relation.relation}")
                 values = tied
@@ -82,12 +101,15 @@ class WorldRelationResolver:
         return selected
 
     @staticmethod
-    def _satisfies(relation, position, reference_position, reference_bounds):
+    def _satisfies(relation, position, reference_position, reference_bounds, subject_bounds=None):
         if relation == SpatialRelationType.INSIDE:
             if reference_position is None or reference_bounds is None:
                 raise RelationNotSatisfied("relation_not_satisfied: inside requires container bounds")
             minimum, maximum = reference_bounds
-            return all(minimum[index] <= position[index] <= maximum[index] for index in range(3))
+            if subject_bounds is None:
+                return all(minimum[index] <= position[index] <= maximum[index] for index in range(3))
+            subject_min, subject_max = subject_bounds
+            return all(subject_min[index] >= minimum[index] and subject_max[index] <= maximum[index] for index in range(3))
         if reference_position is None:
             axis_sign = {
                 SpatialRelationType.LEFT: (0, -1), SpatialRelationType.RIGHT: (0, 1),

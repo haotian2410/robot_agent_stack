@@ -167,7 +167,13 @@ class FakeTaskUnderstandingProvider:
                 relations.extend(ParseRelation(scope="selection", subject=entity.id, relation=rel) for rel in selected_relations)
                 spatial_selector_subjects.add(entity.id)
         if baseball is not None and baseball.id not in spatial_selector_subjects:
-            if "左边" in text or "左侧" in text:
+            if "最左边" in text or "最左侧" in text:
+                relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.LEFTMOST))
+                spatial_selector_subjects.add(baseball.id)
+            elif "最右边" in text or "最右侧" in text:
+                relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.RIGHTMOST))
+                spatial_selector_subjects.add(baseball.id)
+            elif "左边" in text or "左侧" in text:
                 relations.append(ParseRelation(scope="selection", subject=baseball.id, relation=SpatialRelationType.LEFT))
                 spatial_selector_subjects.add(baseball.id)
             elif "右边" in text or "右侧" in text:
@@ -192,6 +198,16 @@ class FakeTaskUnderstandingProvider:
             relations.append(ParseRelation(scope="selection", subject=subject.id, relation=SpatialRelationType.NEAREST, reference=reference.id))
         if "最远" in text or "farthest" in low:
             relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=SpatialRelationType.FARTHEST, reference=entities[-1].id))
+        if not spatial_selector_subjects:
+            extreme_markers = (
+                ("最左边", SpatialRelationType.LEFTMOST), ("最右边", SpatialRelationType.RIGHTMOST),
+                ("最前面", SpatialRelationType.FRONTMOST), ("最后面", SpatialRelationType.BACKMOST),
+                ("最高", SpatialRelationType.HIGHEST), ("最低", SpatialRelationType.LOWEST),
+            )
+            for marker, relation in extreme_markers:
+                if marker in text:
+                    relations.append(ParseRelation(scope="selection", subject=entities[0].id, relation=relation))
+                    break
         if not spatial_selector_subjects and not pure_motion:
             for tokens, relation in ((('前', 'north', 'front'), SpatialRelationType.FRONT), (('后', 'south', 'back'), SpatialRelationType.BACK), (('上', 'above', 'up'), SpatialRelationType.UP), (('下', 'below', 'down'), SpatialRelationType.DOWN)):
                 if (

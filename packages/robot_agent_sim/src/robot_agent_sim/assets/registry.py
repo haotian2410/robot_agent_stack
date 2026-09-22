@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..paths import MODEL_ROOT
+from ..grounding.name_matching import exact_name_match, normalize_name
 
 
 class AssetRecord(BaseModel):
@@ -69,12 +71,27 @@ class AssetRegistry:
         return [record.model_dump(mode="json") for record in self.records]
 
     def resolve(self, category: str, name: str = "", aliases: list[str] | None = None) -> AssetRecord:
-        query = " ".join([category, name, *(aliases or [])]).casefold()
-        candidates = [r for r in self.records if r.exists() and (r.category.casefold() in query or any(a.casefold() in query for a in r.aliases))]
+        requested_labels = [value for value in [name, *(aliases or [])] if value]
+        def label_match(requested: str, candidate: str) -> bool:
+            if exact_name_match(requested, candidate):
+                return True
+            # Permit modifiers such as “blue box” to select the canonical
+            # “box” asset, but never arbitrary substring matches.
+            requested_tokens = set(re.findall(r"[a-z0-9]+", requested.casefold()))
+            candidate_tokens = set(re.findall(r"[a-z0-9]+", candidate.casefold()))
+            return bool(candidate_tokens) and candidate_tokens < requested_tokens
+
+        exact_candidates = [
+            r for r in self.records if r.exists()
+            and any(label_match(requested, candidate) for requested in requested_labels for candidate in (r.model_name, *r.aliases))
+        ]
+        generic_names = {"object", "thing", "container", "location", "box", "basket", "fruit", "ball", "cube", "button"}
+        generic_request = not requested_labels or any(normalize_name(value) in generic_names for value in requested_labels)
+        candidates = exact_candidates or [r for r in self.records if r.exists() and generic_request and r.category.casefold() == category.casefold()]
         if not candidates:
             raise KeyError(f"asset_missing: {category or name}")
         def score(record):
-            exact = record.model_name.casefold() in query or any(alias.casefold() in query for alias in record.aliases)
+            exact = any(label_match(requested, candidate) for requested in requested_labels for candidate in (record.model_name, *record.aliases))
             return (0 if exact else 1, 0 if record.source == "mesh" else 1, record.model_id)
         candidates.sort(key=score)
         if len(candidates) > 1 and score(candidates[0])[:2] == score(candidates[1])[:2]:

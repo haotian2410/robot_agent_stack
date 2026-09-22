@@ -4,7 +4,7 @@ import math
 import random
 import re
 
-from ..contracts.task_intent import Direction, SpatialRelationType
+from ..contracts.task_intent import Direction, QuantityMode, SpatialRelationType
 from .registry import SceneObject, SceneRegistry
 
 WORKSPACE_X = (-0.31, 0.31)
@@ -15,7 +15,18 @@ MIN_GAP_M = 0.04
 class SceneComposer:
     def compose(self, intent, assets, robot: str = "panda", seed: int = 0) -> SceneRegistry:
         rng = random.Random(seed)
-        selection_subjects = {r.subject for r in intent.spatial_relations if r.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}}
+        ranking_relations = {
+            SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
+            SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
+            SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
+            SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
+        }
+        relation_subjects = {r.subject for r in intent.spatial_relations if r.scope == "selection"}
+        selection_subjects = {
+            entity.entity_id for entity in intent.entities
+            if entity.quantity_mode == QuantityMode.CANDIDATE_POOL
+            and (entity.count > 1 or entity.entity_id in relation_subjects)
+        } | {r.subject for r in intent.spatial_relations if r.relation in ranking_relations}
         objects: list[SceneObject] = []
         bindings: dict[str, str] = {}
 
@@ -76,7 +87,7 @@ class SceneComposer:
                     preferred = (
                         reference_item.position[0],
                         reference_item.position[1],
-                        reference_item.position[2] + (reference_item.dimensions_m or (0.0, 0.0, 0.0))[2] * 0.25,
+                        reference_item.position[2],
                     )
             item = self._make_object(entity, assets[entity_id], 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
             objects.append(item)
@@ -88,8 +99,8 @@ class SceneComposer:
             place(entity.entity_id)
 
         for entity in [e for e in intent.entities if e.entity_id in selection_subjects]:
-            relation = next(r for r in intent.spatial_relations if r.subject == entity.entity_id and r.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST})
-            reference = next(item for item in objects if item.object_id == bindings[relation.reference])
+            relation = next((r for r in intent.spatial_relations if r.subject == entity.entity_id and r.relation in ranking_relations), None)
+            reference = next((item for item in objects if relation and relation.reference and item.object_id == bindings[relation.reference]), None)
             # Generate the requested number of candidates.  Selection tasks
             # need at least two candidates even when the language omits an
             # explicit count; an explicit count such as “三个苹果” is kept.
@@ -97,11 +108,11 @@ class SceneComposer:
             candidates = []
             for index in range(candidate_count):
                 if index == 0:
-                    preferred = (reference.position[0] + 0.12, reference.position[1])
+                    preferred = ((reference.position[0] + 0.12) if reference else 0.12, reference.position[1] if reference else 0.0)
                 else:
                     preferred = (
-                        reference.position[0] - 0.26 - 0.12 * (index - 1),
-                        reference.position[1] + 0.18 * (index - 1),
+                        (reference.position[0] if reference else 0.0) - 0.26 - 0.12 * (index - 1),
+                        (reference.position[1] if reference else 0.0) + 0.18 * (index - 1),
                     )
                 candidate = self._make_object(
                     entity, assets[entity.entity_id], index + 1, objects, rng,
@@ -109,11 +120,27 @@ class SceneComposer:
                 )
                 objects.append(candidate)
                 candidates.append(candidate)
-            ranked = sorted(candidates, key=lambda item: _distance(item.position, reference.position), reverse=relation.relation == SpatialRelationType.FARTHEST)
+            ranked = self._rank_candidates(candidates, reference, relation)
             # Preserve the natural-language selection in the registry.
             bindings[entity.entity_id] = ranked[0].object_id
 
         return SceneRegistry(scene_id=f"{robot}_generated_{seed}", robot=robot, objects=objects, bindings=bindings)
+
+    @staticmethod
+    def _rank_candidates(candidates, reference, relation):
+        if relation is None:
+            return candidates
+        if relation.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}:
+            key = lambda item: _distance(item.position, reference.position)
+        else:
+            axis = {
+                SpatialRelationType.LEFTMOST: 0, SpatialRelationType.RIGHTMOST: 0,
+                SpatialRelationType.FRONTMOST: 1, SpatialRelationType.BACKMOST: 1,
+                SpatialRelationType.HIGHEST: 2, SpatialRelationType.LOWEST: 2,
+            }[relation.relation]
+            key = lambda item: item.position[axis]
+        reverse = relation.relation in {SpatialRelationType.FARTHEST, SpatialRelationType.RIGHTMOST, SpatialRelationType.FRONTMOST, SpatialRelationType.HIGHEST}
+        return sorted(candidates, key=key, reverse=reverse)
 
     @staticmethod
     def _relation_pair_positions(relation, subject_dimensions, reference_dimensions):
@@ -162,7 +189,7 @@ class SceneComposer:
             SpatialRelationType.UP: Direction.UP,
             SpatialRelationType.DOWN: Direction.DOWN,
         }
-        unary = [unary_relations[r.relation] for r in intent.spatial_relations if r.subject == entity_id and r.relation in unary_relations]
+        unary = [unary_relations[r.relation] for r in intent.spatial_relations if r.scope in {"scene", "selection"} and r.subject == entity_id and r.relation in unary_relations]
         presets = {Direction.LEFT: (-0.22, 0.0, 0.0), Direction.RIGHT: (0.22, 0.0, 0.0),
                    Direction.FRONT: (0.0, 0.38, 0.0), Direction.BACK: (0.0, -0.38, 0.0),
                    Direction.UP: (0.0, 0.0, 0.20), Direction.DOWN: (0.0, 0.0, 0.02)}

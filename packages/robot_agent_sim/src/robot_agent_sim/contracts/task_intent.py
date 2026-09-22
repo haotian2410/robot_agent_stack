@@ -58,6 +58,12 @@ class SpatialRelationType(StrEnum):
     INSIDE = "inside"
     NEAREST = "nearest"
     FARTHEST = "farthest"
+    LEFTMOST = "leftmost"
+    RIGHTMOST = "rightmost"
+    FRONTMOST = "frontmost"
+    BACKMOST = "backmost"
+    HIGHEST = "highest"
+    LOWEST = "lowest"
 
 
 class TaskEntity(BaseModel):

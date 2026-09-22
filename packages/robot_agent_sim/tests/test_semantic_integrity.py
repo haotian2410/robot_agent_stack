@@ -18,6 +18,11 @@ from robot_agent_sim.models.qwen_http import QwenProviderError, _extract_json
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.grounding.world_relation import RelationAmbiguous, WorldRelationResolver
 from robot_agent_sim.grounding.name_matching import exact_name_match
+from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
+from robot_agent_sim.contracts.skill_plan import SkillPlan, SkillStep
+from robot_agent_sim.planning.context_builder import PlannerInitialState, build_planner_context
+from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
+from robot_agent_sim.assets.registry import AssetRegistry
 
 
 def _entities():
@@ -111,6 +116,59 @@ def test_candidate_pool_quantity_remains_supported():
     parsed = FakeTaskUnderstandingProvider().understand(request)
     assert parsed.entities[0].quantity_mode == QuantityMode.CANDIDATE_POOL
     assert enrich_task(parsed, request.instruction).status == TaskStatus.ACCEPTED
+
+
+def test_route_a_candidate_pool_generates_count_and_leftmost_binding(tmp_path):
+    result = PipelineEngine().plan("把三个苹果中最左边的苹果抓起来", output_dir=tmp_path)
+    assert result.status == "accepted"
+    candidates = [item for item in result.scene_registry["objects"] if item.get("candidate_for") == "apple_01"]
+    assert len(candidates) == 3
+    selected = next(item for item in candidates if item["object_id"] == result.scene_registry["bindings"]["apple_01"])
+    assert selected["position"][0] == min(item["position"][0] for item in candidates)
+
+
+def test_held_pick_and_place_does_not_require_regrasp():
+    task = GroundedTask(
+        instruction="place held apple",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", category="fruit", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="basket", semantic_name="basket", object_id="basket-01", category="container", grounding_method="asset_scene_binding"),
+        ],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="apple", destination="basket")],
+        spatial_relations=[], scene_id="scene",
+    )
+    context = build_planner_context(task, initial_state=PlannerInitialState(held_entity="apple"))
+    plan = SkillPlan(task_types=[TaskType.PICK_AND_PLACE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="basket-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="move", target_object="basket-01", semantic_target="container_interior"),
+        SkillStep(step_id="step-3", operation_id="op-1", skill_name="release", target_object="apple-01", reference_object="basket-01", semantic_target="container_interior"),
+    ])
+    validate_semantic_plan(plan, task, context)
+
+
+def test_held_pick_and_place_rejects_wrong_held_object():
+    task = GroundedTask(
+        instruction="place apple",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", category="fruit", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="basket", semantic_name="basket", object_id="basket-01", category="container", grounding_method="asset_scene_binding"),
+        ], operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="apple", destination="basket")], spatial_relations=[], scene_id="scene",
+    )
+    context = build_planner_context(task, initial_state=PlannerInitialState(held_entity="banana"))
+    plan = SkillPlan(task_types=[TaskType.PICK_AND_PLACE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="basket-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="move", target_object="basket-01", semantic_target="container_interior"),
+        SkillStep(step_id="step-3", operation_id="op-1", skill_name="release", target_object="apple-01", reference_object="basket-01", semantic_target="container_interior"),
+    ])
+    with pytest.raises(ValueError, match="release requires held target"):
+        validate_semantic_plan(plan, task, context)
+
+
+def test_specific_missing_asset_does_not_fallback_by_category():
+    with pytest.raises(KeyError, match="asset_missing"):
+        AssetRegistry().resolve("container", "cup")
 
 
 def test_world_relations_apply_hard_filter_then_nearest_ranking():

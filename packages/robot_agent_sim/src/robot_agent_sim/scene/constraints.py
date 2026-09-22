@@ -21,22 +21,42 @@ def validate_generated_scene(intent, registry) -> None:
         reference_id = registry.bindings.get(relation.reference) if relation.reference else None
         if subject_id is None or (relation.reference and reference_id is None):
             raise SceneConstraintError(f"scene_generation_constraint_failed: missing binding for {relation.subject}")
-        if relation.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}:
+        if relation.relation in {
+            SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
+            SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
+            SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
+            SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
+        }:
             candidates = [item for item in registry.objects if item.candidate_for == relation.subject]
             if not candidates:
                 candidates = [objects[subject_id]]
-            reference_position = positions[reference_id]
-            distances = [math.dist(item.position[:2], reference_position[:2]) for item in candidates]
-            selected_distance = math.dist(positions[subject_id][:2], reference_position[:2])
-            expected = min(distances) if relation.relation == SpatialRelationType.NEAREST else max(distances)
-            if abs(selected_distance - expected) > 1e-6:
+            if relation.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}:
+                reference_position = positions[reference_id]
+                values = [math.dist(item.position[:2], reference_position[:2]) for item in candidates]
+                selected_value = math.dist(positions[subject_id][:2], reference_position[:2])
+                expected = min(values) if relation.relation == SpatialRelationType.NEAREST else max(values)
+            else:
+                axis, high = {
+                    SpatialRelationType.LEFTMOST: (0, False), SpatialRelationType.RIGHTMOST: (0, True),
+                    SpatialRelationType.FRONTMOST: (1, True), SpatialRelationType.BACKMOST: (1, False),
+                    SpatialRelationType.HIGHEST: (2, True), SpatialRelationType.LOWEST: (2, False),
+                }[relation.relation]
+                values = [item.position[axis] for item in candidates]
+                selected_value = positions[subject_id][axis]
+                expected = max(values) if high else min(values)
+            if abs(selected_value - expected) > 1e-6:
                 raise SceneConstraintError(f"scene_generation_constraint_failed: {relation.relation} not satisfied")
             continue
         if relation.relation == SpatialRelationType.INSIDE:
             container = objects[reference_id]
             half = tuple(dimension / 2 for dimension in (container.dimensions_m or (0, 0, 0)))
+            subject = objects[subject_id]
             point = positions[subject_id]
-            if not all(abs(point[index] - container.position[index]) <= half[index] for index in range(3)):
+            subject_half = tuple(dimension / 2 for dimension in (subject.dimensions_m or (0, 0, 0)))
+            if not all(
+                abs(point[index] - container.position[index]) + subject_half[index] <= half[index]
+                for index in range(3)
+            ):
                 raise SceneConstraintError("scene_generation_constraint_failed: inside relation not satisfied")
             continue
         subject = positions[subject_id]

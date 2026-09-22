@@ -75,6 +75,8 @@ def test_session_control_pause_resume_and_close(tmp_path):
     closed = session.run_turn("关闭会话")
     assert closed["status"] == "session_closed"
     assert session.control is None
+    with pytest.raises(RuntimeError, match="SESSION_CLOSED"):
+        session.run_turn("抓苹果")
 
 
 def test_scene_query_uses_dialogue_binding_and_world_state(tmp_path):
