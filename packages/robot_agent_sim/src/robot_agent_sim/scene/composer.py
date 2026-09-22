@@ -21,12 +21,13 @@ class SceneComposer:
             SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
             SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
         }
-        relation_subjects = {r.subject for r in intent.spatial_relations if r.scope == "selection"}
         selection_subjects = {
             entity.entity_id for entity in intent.entities
             if entity.quantity_mode == QuantityMode.CANDIDATE_POOL
-            and (entity.count > 1 or entity.entity_id in relation_subjects)
-        } | {r.subject for r in intent.spatial_relations if r.relation in ranking_relations}
+        } | {
+            r.subject for r in intent.spatial_relations
+            if r.scope in {"scene", "selection"} and r.relation in ranking_relations
+        }
         objects: list[SceneObject] = []
         bindings: dict[str, str] = {}
 
@@ -99,7 +100,12 @@ class SceneComposer:
             place(entity.entity_id)
 
         for entity in [e for e in intent.entities if e.entity_id in selection_subjects]:
-            relation = next((r for r in intent.spatial_relations if r.subject == entity.entity_id and r.relation in ranking_relations), None)
+            relation = next((
+                r for r in intent.spatial_relations
+                if r.scope in {"scene", "selection"}
+                and r.subject == entity.entity_id
+                and r.relation in ranking_relations
+            ), None)
             reference = next((item for item in objects if relation and relation.reference and item.object_id == bindings[relation.reference]), None)
             # Generate the requested number of candidates.  Selection tasks
             # need at least two candidates even when the language omits an

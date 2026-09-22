@@ -15,7 +15,7 @@ from ..contracts.turn import TurnKind
 from ..grounding.iou import match_detections
 from ..grounding.name_matching import exact_name_match
 from ..grounding.segmentation import SceneObservation
-from ..grounding.interaction_registry import collect_interaction_candidates
+from ..grounding.interaction_registry import collect_interaction_candidates, source_body_name
 from ..grounding.candidates import GroundingCandidate, merge_candidate
 from ..grounding.world_relation import WorldRelationResolver
 from ..execution.interaction_registry_builder import build_generated_registry
@@ -150,18 +150,17 @@ class PipelineEngine:
                 for entity_id, object_id in bindings.items():
                     merge_candidate(candidate_map[entity_id], GroundingCandidate(object_id=object_id, sources={"dialogue"}))
                 if interaction_registry is not None:
-                    authored_candidates, _, _, _ = collect_interaction_candidates(
+                    authored_candidates, _, authored_model, _ = collect_interaction_candidates(
                         ground_entities, interaction_registry, scene, excluded_object_ids=excluded_object_ids
                     )
                     for entity_id, values in authored_candidates.items():
                         for object_id, metadata in values:
                             spatial = metadata.get("spatial", {}) if isinstance(metadata, dict) else {}
-                            source_name = (spatial.get("source") or {}).get("name")
                             reference_position = (spatial.get("reference_pose") or {}).get("position")
                             merge_candidate(candidate_map[entity_id], GroundingCandidate(
                                 object_id=object_id,
                                 sources={"interaction_registry"},
-                                body_name=source_name,
+                                body_name=source_body_name(authored_model, metadata),
                                 world_position=tuple(reference_position) if reference_position else None,
                             ))
                 for provider_name, provider_values in (

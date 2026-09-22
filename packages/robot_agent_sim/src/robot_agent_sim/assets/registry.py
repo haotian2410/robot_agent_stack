@@ -72,6 +72,10 @@ class AssetRegistry:
 
     def resolve(self, category: str, name: str = "", aliases: list[str] | None = None) -> AssetRecord:
         requested_labels = [value for value in [name, *(aliases or [])] if value]
+        generic_names = {
+            "object", "thing", "container", "location", "box", "basket", "fruit", "ball", "cube", "button",
+            "物体", "东西", "容器", "位置", "盒子", "篮子", "水果", "球", "方块", "按钮",
+        }
         def label_match(requested: str, candidate: str) -> bool:
             if exact_name_match(requested, candidate):
                 return True
@@ -81,12 +85,19 @@ class AssetRegistry:
             candidate_tokens = set(re.findall(r"[a-z0-9]+", candidate.casefold()))
             return bool(candidate_tokens) and candidate_tokens < requested_tokens
 
+        exact_labels = [
+            value for value in requested_labels
+            if value == name or normalize_name(value) not in generic_names
+        ]
         exact_candidates = [
             r for r in self.records if r.exists()
-            and any(label_match(requested, candidate) for requested in requested_labels for candidate in (r.model_name, *r.aliases))
+            and any(label_match(requested, candidate) for requested in exact_labels for candidate in (r.model_name, *r.aliases))
         ]
-        generic_names = {"object", "thing", "container", "location", "box", "basket", "fruit", "ball", "cube", "button"}
-        generic_request = not requested_labels or any(normalize_name(value) in generic_names for value in requested_labels)
+        generic_request = (
+            normalize_name(name) in generic_names
+            if name
+            else (not requested_labels or all(normalize_name(value) in generic_names for value in requested_labels))
+        )
         candidates = exact_candidates or [r for r in self.records if r.exists() and generic_request and r.category.casefold() == category.casefold()]
         if not candidates:
             raise KeyError(f"asset_missing: {category or name}")

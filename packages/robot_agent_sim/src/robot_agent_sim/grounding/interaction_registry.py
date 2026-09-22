@@ -110,7 +110,7 @@ def ground_partial_with_interaction_registry(
                 entity_id=entity.entity_id,
                 semantic_name=entity.semantic_name,
                 object_id=object_id,
-                body_name=_source_body_name(model, item),
+                body_name=source_body_name(model, item),
                 category=entity.category,
                 color=entity.color,
                 aliases=entity.aliases,
@@ -165,7 +165,7 @@ def _normalize(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.casefold())
 
 
-def _source_body_name(model: mujoco.MjModel, item: dict[str, Any]) -> str | None:
+def source_body_name(model: mujoco.MjModel, item: dict[str, Any]) -> str | None:
     source = item.get("spatial", {}).get("source", {})
     name = source.get("name")
     source_type = source.get("type")
@@ -184,3 +184,11 @@ def _source_body_name(model: mujoco.MjModel, item: dict[str, Any]) -> str | None
         raise ValueError(f"interaction registry source not found in scene: {source_type} {name}")
     body_id = int(model.site_bodyid[object_id]) if source_type == "site" else int(model.geom_bodyid[object_id])
     return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+
+
+__all__ = [
+    "collect_interaction_candidates",
+    "ground_partial_with_interaction_registry",
+    "ground_with_interaction_registry",
+    "source_body_name",
+]

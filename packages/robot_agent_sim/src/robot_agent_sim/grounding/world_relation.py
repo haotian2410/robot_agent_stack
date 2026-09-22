@@ -48,13 +48,14 @@ class WorldRelationResolver:
             if not values:
                 raise RelationAmbiguous(f"grounding_ambiguous: distinct object assignment for {entity_id}")
             relations = [item for item in intent.spatial_relations if item.scope == "selection" and item.subject == entity_id]
-            hard = [item for item in relations if item.relation not in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST}]
-            ranking = [item for item in relations if item.relation in {
+            ranking_relations = {
                 SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
                 SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
                 SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
                 SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST,
-            }]
+            }
+            hard = [item for item in relations if item.relation not in ranking_relations]
+            ranking = [item for item in relations if item.relation in ranking_relations]
             for relation in hard:
                 reference_position = None
                 reference_bounds = None
