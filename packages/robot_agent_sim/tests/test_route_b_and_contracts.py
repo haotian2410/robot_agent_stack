@@ -42,6 +42,12 @@ def test_route_b_auto_discovers_task_body_and_grounding_artifact(tmp_path):
     assert result.status == "accepted"
     assert result.model_call_count == 2
     assert Path(result.artifacts["visual_grounding.json"]).is_file()
+    assert Path(result.artifacts["grounding_candidates.json"]).is_file()
+    assert Path(result.artifacts["grounding_decision.json"]).is_file()
+    assert Path(result.artifacts["raw_vision_grounding.json"]).is_file()
+    decision = json.loads(Path(result.artifacts["grounding_decision.json"]).read_text())
+    assert decision["entities"][0]["object_id"] == "scene_object_001"
+    assert decision["entities"][0]["grounding_method"] == "vlm_iou"
     assert result.grounded_task["entities"][0]["object_id"] == "scene_object_001"
     assert [step["skill_name"] for step in result.skill_plan["steps"]] == [
         "locate", "move", "press"

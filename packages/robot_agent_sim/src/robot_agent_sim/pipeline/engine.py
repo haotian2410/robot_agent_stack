@@ -396,7 +396,56 @@ class PipelineEngine:
                 if path.exists(): path.unlink()
             else:
                 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"); result.artifacts[name] = str(path)
+        PipelineEngine._write_grounding_trace(result, out)
         return result
+
+    @staticmethod
+    def _write_grounding_trace(result, out):
+        """Persist the evidence used to make (or fail) a grounding decision.
+
+        ``visual_grounding.json`` remains the compatibility artifact.  These
+        smaller files make it possible to inspect candidate evidence and the
+        final identity decision independently, including on failed runs.
+        """
+        visual = result.visual_grounding or {}
+        grounded_entities = (result.grounded_task or {}).get("entities", [])
+        candidates = {
+            "status": result.status,
+            "method": visual.get("method"),
+            "detections": visual.get("detections", []),
+            "instance_candidates": visual.get("truth", []),
+            "matches": visual.get("matches", []),
+            "unmatched": visual.get("unmatched", []),
+            "ambiguous": visual.get("ambiguous", []),
+        }
+        decisions = {
+            "status": result.status,
+            "error": result.error,
+            "entities": [
+                {
+                    key: entity.get(key)
+                    for key in (
+                        "entity_id", "semantic_name", "category", "color",
+                        "object_id", "body_name", "grounding_method", "bbox_iou",
+                    )
+                }
+                for entity in grounded_entities
+            ],
+        }
+        for name, payload in {
+            "grounding_candidates.json": candidates,
+            "grounding_decision.json": decisions,
+        }.items():
+            path = out / name
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            result.artifacts[name] = str(path)
+        if visual.get("detections") is not None and "detections" in visual:
+            path = out / "raw_vision_grounding.json"
+            path.write_text(
+                json.dumps({"detections": visual["detections"]}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            result.artifacts["raw_vision_grounding.json"] = str(path)
 
     @staticmethod
     def _add_observation_artifacts(artifacts, observation):
