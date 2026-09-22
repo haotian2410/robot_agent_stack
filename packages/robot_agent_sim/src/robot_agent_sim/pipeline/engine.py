@@ -323,6 +323,7 @@ class PipelineEngine:
             message = str(exc)
             status = (
                 "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded)
+                else "model_output_truncated" if "model_output_truncated" in message
                 else "clarification_required" if "semantic_conflict:" in message
                 else "task_semantic_invalid" if "task_semantic_invalid:" in message
                 else "asset_missing" if "asset_missing" in message

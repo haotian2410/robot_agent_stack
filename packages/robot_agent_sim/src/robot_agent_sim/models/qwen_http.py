@@ -94,10 +94,18 @@ class QwenHTTPProvider:
             if not isinstance(content, str) or not content.strip():
                 raise QwenProviderError(f"{stage}: empty model content")
             extracted = _extract_json(content)
-            self.calls.append({"stage": stage, "status": "succeeded", "model": self.model, "prompt_tokens": body.get("usage", {}).get("prompt_tokens"), "completion_tokens": body.get("usage", {}).get("completion_tokens"), "finish_reason": body.get("choices", [{}])[0].get("finish_reason")})
+            finish_reason = body.get("choices", [{}])[0].get("finish_reason")
+            record = {"stage": stage, "status": "succeeded", "model": self.model, "prompt_tokens": body.get("usage", {}).get("prompt_tokens"), "completion_tokens": body.get("usage", {}).get("completion_tokens"), "finish_reason": finish_reason}
+            if finish_reason == "length":
+                record["status"] = "failed"
+                record["error"] = "model_output_truncated"
+                self.calls.append(record)
+                raise QwenProviderError(f"{stage}: model_output_truncated")
+            self.calls.append(record)
             return extracted
         except QwenProviderError as exc:
-            self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": getattr(response, "status_code", None), "finish_reason": None, "error": str(exc)})
+            if not self.calls or self.calls[-1].get("stage") != stage or str(self.calls[-1].get("error", "")) not in str(exc):
+                self.calls.append({"stage": stage, "status": "failed", "model": self.model, "http_status": getattr(response, "status_code", None), "finish_reason": None, "error": str(exc)})
             raise
         except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, ValidationError) as exc:
             status = getattr(response, "status_code", None)
@@ -111,6 +119,7 @@ class QwenHTTPProvider:
         # not expose it as part of the minimal parser contract.
         if isinstance(value, dict):
             value.pop("instruction", None)
+        self.last_raw_values["task_understanding"] = value
         return TaskParseLLMOutput.model_validate(value)
 
     def detect(self, request):
@@ -136,15 +145,16 @@ class QwenHTTPProvider:
 def _extract_json(content: str) -> str:
     text = content.strip()
     if text.startswith("```"):
+        if not text.endswith("```"):
+            raise QwenProviderError("model output has an unterminated JSON fence")
         text = text[3:].strip()
         if text.startswith("json"): text = text[4:].lstrip()
         if text.endswith("```"): text = text[:-3].rstrip()
     decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char != "{": continue
-        try:
-            value, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict): return json.dumps(value, ensure_ascii=False)
-    raise QwenProviderError("model output does not contain a JSON object")
+    try:
+        value, end = decoder.raw_decode(text)
+    except json.JSONDecodeError as exc:
+        raise QwenProviderError("model output must be exactly one JSON object") from exc
+    if not isinstance(value, dict) or text[end:].strip():
+        raise QwenProviderError("model output must be exactly one JSON object")
+    return json.dumps(value, ensure_ascii=False)

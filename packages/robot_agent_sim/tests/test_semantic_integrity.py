@@ -14,6 +14,7 @@ from robot_agent_sim.contracts.task_intent import (
 from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput, enrich_task
 from robot_agent_sim.models.motion_policy import MotionPolicy
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
+from robot_agent_sim.models.qwen_http import QwenProviderError, _extract_json
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.grounding.world_relation import RelationAmbiguous, WorldRelationResolver
 from robot_agent_sim.grounding.name_matching import exact_name_match
@@ -162,3 +163,10 @@ def test_name_matching_does_not_use_dangerous_substrings():
     assert exact_name_match("apple", "apple_01")
     assert not exact_name_match("apple", "pineapple")
     assert not exact_name_match("ball", "baseball")
+
+
+def test_model_output_must_be_one_json_object():
+    assert _extract_json('{"ok":true}') == '{"ok": true}'
+    assert _extract_json('```json\n{"ok":true}\n```') == '{"ok": true}'
+    with pytest.raises(QwenProviderError):
+        _extract_json('说明文字 {"example":true} 最终结果 {"ok":true}')

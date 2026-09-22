@@ -8,7 +8,7 @@ from robot_agent_sim.contracts.skill_plan import SkillPlan, SkillStep
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskType
 from robot_agent_sim.models.prompts import SKILL_PLANNING_PROMPT
 from robot_agent_sim.models.skill_planning import SkillPlanLLMOutput
-from robot_agent_sim.models.qwen_http import QwenHTTPProvider
+from robot_agent_sim.models.qwen_http import QwenHTTPProvider, QwenProviderError
 from robot_agent_sim.planning.context_builder import build_planner_context
 from robot_agent_sim.planning.recipe_planner import RecipePlanner
 from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
@@ -118,7 +118,7 @@ def test_qwen_response_finish_reason_is_recorded(monkeypatch):
     monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", lambda *args, **kwargs: Response())
     provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
     from robot_agent_sim.models.skill_planning import SkillPlanningRequest
-    with pytest.raises(ValidationError):
+    with pytest.raises(QwenProviderError, match="model_output_truncated"):
         provider.plan(SkillPlanningRequest(context=build_planner_context(cabinet_task(), SIDECAR), skill_catalog=REGISTRY.prompt_catalog()))
     assert provider.calls[-1]["finish_reason"] == "length"
 
