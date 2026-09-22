@@ -22,6 +22,8 @@ class SceneComposer:
         by_entity = {entity.entity_id: entity for entity in intent.entities}
         preferred_by_entity: dict[str, tuple[float, float, float]] = {}
         for relation in intent.spatial_relations:
+            if relation.scope not in {"scene", "selection"}:
+                continue
             if not relation.reference or relation.relation not in {
                 SpatialRelationType.LEFT_OF,
                 SpatialRelationType.RIGHT_OF,
@@ -51,7 +53,8 @@ class SceneComposer:
             relation = next(
                 (
                     relation for relation in intent.spatial_relations
-                    if relation.subject == entity_id
+                    if relation.scope in {"scene", "selection"}
+                    and relation.subject == entity_id
                     and relation.reference
                     and relation.relation in {
                         SpatialRelationType.LEFT_OF,
@@ -60,6 +63,7 @@ class SceneComposer:
                         SpatialRelationType.BEHIND,
                         SpatialRelationType.ABOVE,
                         SpatialRelationType.BELOW,
+                        SpatialRelationType.INSIDE,
                     }
                 ),
                 None,
@@ -67,7 +71,14 @@ class SceneComposer:
             preferred = preferred_by_entity.get(entity_id)
             if relation is not None:
                 place(relation.reference)
-            item = self._make_object(entity, assets[entity_id], 1, objects, rng, intent, preferred=preferred)
+                if relation.relation == SpatialRelationType.INSIDE:
+                    reference_item = next(item for item in objects if item.object_id == bindings[relation.reference])
+                    preferred = (
+                        reference_item.position[0],
+                        reference_item.position[1],
+                        reference_item.position[2] + (reference_item.dimensions_m or (0.0, 0.0, 0.0))[2] * 0.25,
+                    )
+            item = self._make_object(entity, assets[entity_id], 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
             objects.append(item)
             bindings[entity.entity_id] = item.object_id
             placed.add(entity_id)
@@ -127,9 +138,9 @@ class SceneComposer:
             reference[2] = subject_dimensions[2] + gap
         return tuple(subject), tuple(reference)
 
-    def _make_object(self, entity, asset, index, existing, rng, intent, preferred=None):
+    def _make_object(self, entity, asset, index, existing, rng, intent, preferred=None, allow_overlap_object=None):
         dimensions = asset.dimensions_m or _primitive_dimensions(asset.model_name)
-        position = self._position(entity.entity_id, dimensions, existing, rng, intent, preferred)
+        position = self._position(entity.entity_id, dimensions, existing, rng, intent, preferred, allow_overlap_object)
         base = _slug(entity.semantic_name or asset.model_name)
         if base == "scene_object":
             # Non-Latin semantic names collapse to the generic slug.  Prefer
@@ -142,7 +153,7 @@ class SceneComposer:
                            entity_id=entity.entity_id if index == 1 else None, candidate_for=entity.entity_id,
                            model_id=asset.model_id, model_name=asset.model_name)
 
-    def _position(self, entity_id, dimensions, existing, rng, intent, preferred):
+    def _position(self, entity_id, dimensions, existing, rng, intent, preferred, allow_overlap_object=None):
         unary_relations = {
             SpatialRelationType.LEFT: Direction.LEFT,
             SpatialRelationType.RIGHT: Direction.RIGHT,
@@ -170,7 +181,7 @@ class SceneComposer:
             x = max(WORKSPACE_X[0] + dimensions[0] / 2, min(WORKSPACE_X[1] - dimensions[0] / 2, x))
             y = max(WORKSPACE_Y[0] + dimensions[1] / 2, min(WORKSPACE_Y[1] - dimensions[1] / 2, y))
             candidate = (round(x, 6), round(y, 6), round(z, 6))
-            if all(not _overlap(candidate, dimensions, item.position, item.dimensions_m or (0, 0, 0)) for item in existing):
+            if all(item.object_id == allow_overlap_object or not _overlap(candidate, dimensions, item.position, item.dimensions_m or (0, 0, 0)) for item in existing):
                 return candidate
         raise ValueError("unable to find a valid non-overlapping placement")
 

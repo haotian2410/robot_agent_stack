@@ -165,7 +165,7 @@ def test_name_matching_does_not_use_dangerous_substrings():
     assert not exact_name_match("ball", "baseball")
 
 
-def test_generated_scene_does_not_ignore_inside_selection_relation(tmp_path):
+def test_generated_scene_preserves_inside_selection_relation(tmp_path):
     class InsideProvider:
         def understand(self, request):
             return TaskParseLLMOutput(
@@ -178,7 +178,10 @@ def test_generated_scene_does_not_ignore_inside_selection_relation(tmp_path):
                 relations=[ParseRelation(subject="apple", relation=SpatialRelationType.INSIDE, reference="basket")],
             )
     result = PipelineEngine(understanding=InsideProvider()).plan("抓篮子里的苹果", output_dir=tmp_path)
-    assert result.status == "scene_generation_constraint_failed"
+    assert result.status == "accepted"
+    apple = next(item for item in result.scene_registry["objects"] if item["semantic_name"] == "apple")
+    basket = next(item for item in result.scene_registry["objects"] if item["semantic_name"] == "basket")
+    assert abs(apple["position"][0] - basket["position"][0]) <= basket["dimensions_m"][0] / 2
 
 
 def test_model_output_must_be_one_json_object():
