@@ -22,9 +22,10 @@ def ground_with_interaction_registry(
     intent=None,
     positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
     bounds: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] | None = None,
+    excluded_object_ids: set[str] | None = None,
 ) -> list[GroundedEntity]:
     grounded, missing = ground_partial_with_interaction_registry(
-        entities, registry_path, scene_path, intent=intent, positions=positions, bounds=bounds
+        entities, registry_path, scene_path, intent=intent, positions=positions, bounds=bounds, excluded_object_ids=excluded_object_ids
     )
     if missing:
         names = ", ".join(entity.semantic_name for entity in missing)
@@ -40,6 +41,7 @@ def ground_partial_with_interaction_registry(
     intent=None,
     positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
     bounds: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] | None = None,
+    excluded_object_ids: set[str] | None = None,
 ) -> tuple[list[GroundedEntity], list[Any]]:
     """Ground the subset covered by an authored registry.
 
@@ -61,6 +63,8 @@ def ground_partial_with_interaction_registry(
         exact: list[tuple[str, dict[str, Any]]] = []
         fuzzy: list[tuple[str, dict[str, Any]]] = []
         for object_id, item in objects.items():
+            if object_id in (excluded_object_ids or set()):
+                continue
             names = {object_id, str(item.get("object_id", object_id)), *(str(value) for value in item.get("aliases", []))}
             if any(exact_name_match(query, name) for query in query_values for name in names):
                 exact.append((object_id, item))

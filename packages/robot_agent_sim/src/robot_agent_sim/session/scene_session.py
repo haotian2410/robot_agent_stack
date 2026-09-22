@@ -70,6 +70,11 @@ class SceneSession:
         if parsed_turn.turn_kind == TurnKind.SESSION_CONTROL:
             raise ValueError("session control is not supported by run_turn")
         explicit_bindings = {}
+        excluded_object_ids = set()
+        if "另一个" in instruction:
+            previous_object = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
+            if previous_object:
+                excluded_object_ids.add(previous_object)
         if referent_object_id and any(token in instruction for token in ("它", "刚才那个", "这个")):
             reference_pronoun = any(token in instruction for token in ("放到它", "放进它", "在它", "它旁边", "它里面"))
             operation = next((item for item in parsed_turn.operations if item.source or item.target or item.destination or item.reference), None)
@@ -112,6 +117,7 @@ class SceneSession:
             parsed_turn=parsed_turn,
             planning_mode=ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL,
             held_object_id=self.world_state.held_object if self.world_state else None,
+            excluded_object_ids=excluded_object_ids,
         )
         if self.scene_version == 0:
             result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)

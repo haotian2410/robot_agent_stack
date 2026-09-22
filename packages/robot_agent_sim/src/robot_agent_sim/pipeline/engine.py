@@ -79,7 +79,7 @@ class PipelineEngine:
             **kwargs,
         )
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None, held_object_id: str | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None, held_object_id: str | None = None, excluded_object_ids: set[str] | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -141,6 +141,7 @@ class PipelineEngine:
                         intent=intent,
                         positions=world_positions or {item.object_id: item.world_position for item in observation.instances},
                         bounds=_registry_bounds(registry, world_positions or {item.object_id: item.world_position for item in observation.instances}),
+                        excluded_object_ids=excluded_object_ids,
                     )
                     visual_grounding = {
                         "method": "interaction_registry",
@@ -148,7 +149,7 @@ class PipelineEngine:
                     }
                     asset_bindings = {}
                     if missing_entities:
-                        cached_missing = _semantic_cache_candidates(missing_entities, semantic_map, registry)
+                        cached_missing = _semantic_cache_candidates(missing_entities, semantic_map, registry, excluded_object_ids)
                         instance_by_id = {item.object_id: item for item in observation.instances}
                         still_missing = []
                         for entity in missing_entities:
@@ -159,7 +160,7 @@ class PipelineEngine:
                                 authored_grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="semantic_cache", instance_bbox=instance_by_id[object_id].bbox))
                             else:
                                 still_missing.append(entity)
-                        geometry_missing = _geometry_candidates(still_missing, registry)
+                        geometry_missing = _geometry_candidates(still_missing, registry, excluded_object_ids)
                         still_missing_after_geometry = []
                         for entity in still_missing:
                             values = geometry_missing.get(entity.entity_id, [])
@@ -203,14 +204,14 @@ class PipelineEngine:
                             authored_grounded.append(GroundedEntity(entity_id=candidate.entity_id, semantic_name=source_entity.semantic_name, object_id=object_id, body_name=instance.body_name, category=source_entity.category, color=source_entity.color, aliases=source_entity.aliases, quantity_mode=source_entity.quantity_mode, grounding_method="vlm_iou", detection_bbox=candidate.bbox, instance_bbox=instance.bbox, bbox_iou=score))
                     grounded = authored_grounded
                 else:
-                    cached_candidates = _semantic_cache_candidates(ground_entities, semantic_map, registry)
-                    geometry_candidates = _geometry_candidates(ground_entities, registry)
+                    cached_candidates = _semantic_cache_candidates(ground_entities, semantic_map, registry, excluded_object_ids)
+                    geometry_candidates = _geometry_candidates(ground_entities, registry, excluded_object_ids)
                     for entity_id, values in geometry_candidates.items():
                         if not cached_candidates.get(entity_id):
                             cached_candidates[entity_id] = values
                     current_positions = world_positions or {item.object_id: item.world_position for item in observation.instances}
                     cached_entities = {entity_id for entity_id, values in cached_candidates.items() if values}
-                    semantic_only_candidates = _semantic_cache_candidates(ground_entities, semantic_map, registry)
+                    semantic_only_candidates = _semantic_cache_candidates(ground_entities, semantic_map, registry, excluded_object_ids)
                     geometry_entities = {
                         entity_id for entity_id, values in geometry_candidates.items()
                         if values and not semantic_only_candidates.get(entity_id)
@@ -247,7 +248,8 @@ class PipelineEngine:
                         candidate_map = {entity.entity_id: list(cached_candidates.get(entity.entity_id, [])) for entity in ground_entities}
                         for detection_id, object_id, score in matches:
                             candidate = next(item for item in relevant if item.detection_id == detection_id)
-                            candidate_map[candidate.entity_id].append({"object_id": object_id, "detection_bbox": tuple(candidate.bbox), "instance_bbox": instance_by_id[object_id].bbox, "bbox_iou": score})
+                            if not excluded_object_ids or object_id not in excluded_object_ids:
+                                candidate_map[candidate.entity_id].append({"object_id": object_id, "detection_bbox": tuple(candidate.bbox), "instance_bbox": instance_by_id[object_id].bbox, "bbox_iou": score})
                         selected = WorldRelationResolver().resolve(intent, candidate_map, positions, bounds=_registry_bounds(registry, positions))
                         grounded = []
                         for entity in ground_entities:
@@ -401,7 +403,7 @@ class PipelineEngine:
         for name, path in {"rgb.png": observation.rgb_path, "segmentation.npy": observation.segmentation_path, "segmentation.png": observation.segmentation_visualization_path, "instances.json": observation.instance_index_path}.items(): artifacts[name] = str(path)
 
 
-def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, registry) -> dict[str, list[dict[str, str]]]:
+def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, registry, excluded_object_ids: set[str] | None = None) -> dict[str, list[dict[str, str]]]:
     if not semantic_map:
         return {}
     objects = semantic_map.get("objects", semantic_map)
@@ -411,7 +413,7 @@ def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, re
         query = {str(entity.semantic_name).casefold(), *(str(alias).casefold() for alias in entity.aliases)}
         matches = []
         for object_id, value in objects.items():
-            if object_id not in available:
+            if object_id not in available or object_id in (excluded_object_ids or set()):
                 continue
             if value.get("category") and value.get("category") != entity.category:
                 continue
@@ -424,13 +426,15 @@ def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, re
     return result
 
 
-def _geometry_candidates(entities, registry) -> dict[str, list[dict[str, str]]]:
+def _geometry_candidates(entities, registry, excluded_object_ids: set[str] | None = None) -> dict[str, list[dict[str, str]]]:
     """Use stable authored body/object names before paying for vision."""
     result: dict[str, list[dict[str, str]]] = {}
     for entity in entities:
         queries = {str(entity.semantic_name).casefold(), *(str(alias).casefold() for alias in entity.aliases)}
         values = []
         for item in registry.objects:
+            if item.object_id in (excluded_object_ids or set()):
+                continue
             if item.object_id.startswith("scene_object_") and str(item.semantic_name).casefold() == item.body_name.casefold():
                 continue
             names = {item.object_id.casefold(), item.body_name.casefold(), str(item.semantic_name).casefold()}

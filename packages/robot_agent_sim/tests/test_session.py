@@ -65,6 +65,18 @@ def test_scene_query_uses_dialogue_binding_and_world_state(tmp_path):
         session.close()
 
 
+def test_another_excludes_previous_dialogue_object(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果抓起来")
+        first_id = first["result"]["grounded_task"]["entities"][0]["object_id"]
+        second = session.run_turn("抓另一个苹果")
+        second_id = second["result"]["grounded_task"]["entities"][0]["object_id"]
+        assert second_id != first_id
+    finally:
+        session.close()
+
+
 def test_remove_held_object_is_rejected(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
