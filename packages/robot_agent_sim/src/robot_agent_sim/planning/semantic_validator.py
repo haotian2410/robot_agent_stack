@@ -57,7 +57,6 @@ def _validate(plan, task, context, skill_registry) -> None:
             return
         operation = next(item for item in task.operations if item.operation_id == operation_id)
         events = operation_events[operation_id]
-        event_names = {event.skill for event in events}
         reached_for_operation = operation_reached[operation_id]
         target_entity = operation.target or operation.source
         if operation.task_type.value == "grasp" and held_state != target_entity:
@@ -66,19 +65,36 @@ def _validate(plan, task, context, skill_registry) -> None:
             destination = operation.destination
             source_initially_held = operation_initial_held.get(operation_id) == operation.source
             grasped_source = any(event.skill == "grasp" and event.target == operation.source for event in events)
-            valid_release = any(
-                event.skill == "release"
-                and event.target == operation.source
-                and event.reference == destination
-                and event.region == "container_interior"
-                for event in events
-            )
+            valid_release = False
+            for event in events:
+                if not (
+                    event.skill == "release"
+                    and event.target == operation.source
+                    and event.reference == destination
+                    and event.region == "container_interior"
+                ):
+                    continue
+                preceding_moves = [
+                    candidate for candidate in events
+                    if candidate.skill == "move" and candidate.sequence < event.sequence
+                ]
+                last_move = preceding_moves[-1] if preceding_moves else None
+                if (
+                    last_move is not None
+                    and last_move.target == destination
+                    and last_move.region == "container_interior"
+                ):
+                    valid_release = True
+                    break
             if (not source_initially_held and not grasped_source) or not valid_release or (destination, "container_interior") not in reached_for_operation:
                 raise ValueError("pick_and_place operation outcome is incomplete")
             if held_state == operation.source:
                 raise ValueError("pick_and_place operation did not release source")
-        if operation.task_type.value == "release" and not any(event.skill == "release" and event.target == target_entity for event in events):
-            raise ValueError("release operation did not execute release")
+        if operation.task_type.value == "release":
+            if not any(event.skill == "release" and event.target == target_entity for event in events):
+                raise ValueError("release operation did not execute release")
+            if held_state == target_entity:
+                raise ValueError("release operation ended holding released target")
         if operation.task_type.value == "press" and not any(event.skill == "press" and event.target == operation.target for event in events):
             raise ValueError("press operation did not execute press")
         if operation.task_type.value == "open":
@@ -91,10 +107,26 @@ def _validate(plan, task, context, skill_registry) -> None:
                 raise ValueError("close operation did not end with matching push")
         if operation.task_type.value == "locate" and not any(event.skill == "locate" and event.target == target_entity for event in events):
             raise ValueError("locate operation did not locate target")
-        if operation.task_type.value == "move" and not any(event.skill == "move" and event.target == target_entity for event in events):
-            raise ValueError("move operation did not execute move")
-        if operation.task_type.value == "move" and operation.motion_direction and not any(event.skill == "move" and event.region == "relative_motion" and event.target == target_entity for event in events):
-            raise ValueError("directional move operation did not perform relative_motion")
+        if operation.task_type.value == "move":
+            move_events = [event for event in events if event.skill == "move"]
+            last_move = move_events[-1] if move_events else None
+            if operation.motion_direction:
+                valid_move = (
+                    last_move is not None
+                    and last_move.region == "relative_motion"
+                    and last_move.target == target_entity
+                )
+                if not valid_move:
+                    raise ValueError("directional move operation did not perform relative_motion")
+            else:
+                valid_move = (
+                    last_move is not None
+                    and last_move.target == target_entity
+                    and last_move.region in {"relative_region", "semantic_region"}
+                    and (operation.reference is None or last_move.reference == operation.reference)
+                )
+                if not valid_move:
+                    raise ValueError("move operation did not execute matching semantic move")
 
     for step in plan.steps:
         definition = skill_registry.require(step.skill_name)
