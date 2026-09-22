@@ -48,12 +48,17 @@ def test_context_projects_semantics_and_excludes_physics():
         assert forbidden not in payload
 
 
-def test_directional_move_override_preserves_source_role():
+@pytest.mark.parametrize("role", ["source", "target"])
+def test_directional_move_override_preserves_primary_role(role):
     task = GroundedTask(
         instruction="move baseball right",
         task_types=[TaskType.MOVE],
         entities=[GroundedEntity(entity_id="baseball", semantic_name="baseball", object_id="baseball-01", grounding_method="asset_scene_binding")],
-        operations=[Operation(operation_id="op-1", task_type=TaskType.MOVE, source="baseball", motion_direction="right", distance_m=0.05)],
+        operations=[Operation(
+            operation_id="op-1", task_type=TaskType.MOVE,
+            motion_direction="right", distance_m=0.05,
+            **{role: "baseball"},
+        )],
         spatial_relations=[], scene_id="scene",
     )
     output = SkillPlanLLMOutput(operations=[{"id": "op-1", "steps": []}])

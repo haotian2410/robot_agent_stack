@@ -53,6 +53,13 @@ def test_route_b_auto_discovers_task_body_and_grounding_artifact(tmp_path):
     assert [step["skill_name"] for step in result.skill_plan["steps"]] == [
         "locate", "move", "press"
     ]
+    validation = json.loads(Path(result.artifacts["semantic_validation.json"]).read_text())
+    assert validation["task_intent_validation"]["status"] == "accepted"
+    assert validation["grounding_validation"]["status"] == "accepted"
+    assert validation["skill_plan_validation"] == {
+        "status": "accepted",
+        "operation_outcomes": [{"operation_id": "op-1", "result": "completed"}],
+    }
 
 
 def test_route_b_sidecar_takes_precedence(tmp_path):
@@ -329,7 +336,7 @@ def test_qwen_provider_sends_fixed_stage_and_extracts_json(monkeypatch, tmp_path
 
         def json(self):
             return {
-                "choices": [{"message": {"content": '{"status":"unsupported_task","raw_task":"x"}'}}],
+                "choices": [{"message": {"content": '{"status":"unsupported_task","raw_task":"x","instruction":"x"}'}}],
                 "usage": {"prompt_tokens": 3, "completion_tokens": 4},
             }
 
@@ -349,6 +356,8 @@ def test_qwen_provider_sends_fixed_stage_and_extracts_json(monkeypatch, tmp_path
     assert provider.calls[0]["stage"] == "task_understanding"
     assert body["response_format"]["type"] == "json_schema"
     assert "json_schema" in body["response_format"]
+    assert provider.last_raw_values["task_understanding"]["instruction"] == "x"
+    assert "instruction" not in intent.model_dump(mode="json")
 
 
 @pytest.mark.parametrize(

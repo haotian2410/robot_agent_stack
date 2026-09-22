@@ -3,8 +3,10 @@ import json
 import pytest
 
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskStatus, TaskType
+from robot_agent_sim.contracts.turn import SceneQueryIntent, SceneQueryType
 from robot_agent_sim.grounding.world_relation import RelationNotSatisfied, WorldRelationResolver
 from robot_agent_sim.session import SceneSession
+from robot_agent_sim.session.contracts import ObjectWorldState, SemanticObject, WorldState
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.pipeline.engine import PipelineEngine
 
@@ -50,6 +52,32 @@ def test_scene_query_existence_is_structured(tmp_path):
         session.close()
 
 
+@pytest.mark.parametrize(
+    ("query", "existing"),
+    [("apple", "pineapple"), ("ball", "baseball"), ("cup", "cupcake")],
+)
+def test_scene_query_and_edit_resolution_reject_substring_matches(tmp_path, query, existing):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    object_id = f"{existing}_01"
+    session.semantic_map.objects[object_id] = SemanticObject(
+        object_id=object_id, labels=[existing], category="object",
+    )
+    session.scene_registry = {
+        "objects": [{"object_id": object_id, "semantic_name": existing, "model_name": existing}],
+    }
+    session.world_state = WorldState(
+        world_version=1, scene_version=1, turn_index=1, sim_time=0.0,
+        objects={object_id: ObjectWorldState(object_id=object_id, position=(0.0, 0.0, 0.0))},
+    )
+
+    answer = session._run_scene_query(SceneQueryIntent(
+        query_type=SceneQueryType.EXISTENCE, semantic_name=query,
+    ))
+    assert "不存在" in answer
+    with pytest.raises(ValueError, match="scene edit reference is missing"):
+        session._resolve_semantic_object(query)
+
+
 def test_dialogue_referent_keeps_stable_object_id(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
@@ -60,6 +88,36 @@ def test_dialogue_referent_keeps_stable_object_id(tmp_path):
         assert rebound["object_id"] == selected
         assert rebound["grounding_method"] == "dialogue_binding"
         assert [step["skill_name"] for step in second["result"]["skill_plan"]["steps"]] == ["locate", "move", "release"]
+    finally:
+        session.close()
+
+
+def test_dialogue_referent_binds_spatial_relation_reference(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        referent_id = next(
+            entity["object_id"] for entity in first["result"]["grounded_task"]["entities"]
+            if entity["entity_id"] == "apple_01"
+        )
+
+        second = session.run_turn("把它左边的苹果抓起来")
+
+        assert second["status"] == "accepted"
+        relation = second["result"]["task_intent"]["spatial_relations"][0]
+        assert relation == {
+            "subject": "apple_01",
+            "relation": "left_of",
+            "reference": "apple_dialogue_ref",
+            "scope": "selection",
+        }
+        grounded = {
+            entity["entity_id"]: entity
+            for entity in second["result"]["grounded_task"]["entities"]
+        }
+        assert grounded["apple_dialogue_ref"]["object_id"] == referent_id
+        assert grounded["apple_dialogue_ref"]["grounding_method"] == "dialogue_binding"
+        assert grounded["apple_01"]["object_id"] != referent_id
     finally:
         session.close()
 
@@ -75,6 +133,7 @@ def test_session_control_pause_resume_and_close(tmp_path):
     closed = session.run_turn("关闭会话")
     assert closed["status"] == "session_closed"
     assert session.control is None
+    assert json.loads((session.output_root / "session.json").read_text(encoding="utf-8"))["closed"] is True
     with pytest.raises(RuntimeError, match="SESSION_CLOSED"):
         session.run_turn("抓苹果")
 

@@ -15,7 +15,7 @@ from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperatio
 from robot_agent_sim.models.motion_policy import MotionPolicy
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.models.qwen_http import QwenProviderError, _extract_json
-from robot_agent_sim.pipeline.engine import PipelineEngine
+from robot_agent_sim.pipeline.engine import PipelineEngine, _semantic_cache_candidates
 from robot_agent_sim.grounding.world_relation import RelationAmbiguous, WorldRelationResolver
 from robot_agent_sim.grounding.name_matching import exact_name_match
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
@@ -23,6 +23,8 @@ from robot_agent_sim.contracts.skill_plan import SkillPlan, SkillStep
 from robot_agent_sim.planning.context_builder import PlannerInitialState, build_planner_context
 from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
 from robot_agent_sim.assets.registry import AssetRegistry
+from robot_agent_sim.scene.registry import SceneObject, SceneRegistry
+from robot_agent_sim.scene.constraints import SceneConstraintError, validate_generated_scene
 
 
 def _entities():
@@ -118,6 +120,24 @@ def test_candidate_pool_quantity_remains_supported():
     assert enrich_task(parsed, request.instruction).status == TaskStatus.ACCEPTED
 
 
+def test_candidate_pool_without_relation_still_generates_minimum_pool(tmp_path):
+    class PoolProvider:
+        def understand(self, request):
+            return TaskParseLLMOutput(
+                status="accepted",
+                entities=[ParseEntity(
+                    id="apple", name="apple", category="fruit",
+                    count=1, quantity_mode=QuantityMode.CANDIDATE_POOL,
+                )],
+                operations=[ParseOperation(type="grasp", target="apple")],
+            )
+
+    result = PipelineEngine(understanding=PoolProvider()).plan("抓候选苹果", output_dir=tmp_path)
+    assert result.status == "accepted"
+    candidates = [item for item in result.scene_registry["objects"] if item.get("candidate_for") == "apple"]
+    assert len(candidates) == 2
+
+
 def test_route_a_candidate_pool_generates_count_and_leftmost_binding(tmp_path):
     result = PipelineEngine().plan("把三个苹果中最左边的苹果抓起来", output_dir=tmp_path)
     assert result.status == "accepted"
@@ -125,6 +145,30 @@ def test_route_a_candidate_pool_generates_count_and_leftmost_binding(tmp_path):
     assert len(candidates) == 3
     selected = next(item for item in candidates if item["object_id"] == result.scene_registry["bindings"]["apple_01"])
     assert selected["position"][0] == min(item["position"][0] for item in candidates)
+
+
+@pytest.mark.parametrize(
+    ("instruction", "selector"),
+    [
+        ("把三个苹果中最右边的苹果抓起来", lambda item, reference: item["position"][0]),
+        ("把三个苹果中靠近篮子的苹果抓起来", lambda item, reference: (
+            (item["position"][0] - reference["position"][0]) ** 2
+            + (item["position"][1] - reference["position"][1]) ** 2
+        )),
+    ],
+)
+def test_route_a_candidate_pool_preserves_count_for_other_rankings(tmp_path, instruction, selector):
+    result = PipelineEngine().plan(instruction, output_dir=tmp_path)
+    assert result.status == "accepted"
+    candidates = [item for item in result.scene_registry["objects"] if item.get("candidate_for") == "apple_01"]
+    assert len(candidates) == 3
+    selected = next(item for item in candidates if item["object_id"] == result.scene_registry["bindings"]["apple_01"])
+    basket = next((item for item in result.scene_registry["objects"] if item["semantic_name"] == "basket"), None)
+    scores = [selector(item, basket) for item in candidates]
+    if "最右边" in instruction:
+        assert selector(selected, basket) == max(scores)
+    else:
+        assert selector(selected, basket) == min(scores)
 
 
 def test_held_pick_and_place_does_not_require_regrasp():
@@ -166,9 +210,128 @@ def test_held_pick_and_place_rejects_wrong_held_object():
         validate_semantic_plan(plan, task, context)
 
 
+def test_pick_and_place_rejects_leaving_destination_before_release():
+    task = GroundedTask(
+        instruction="place apple in basket", task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", category="fruit", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="basket", semantic_name="basket", object_id="basket-01", category="container", grounding_method="asset_scene_binding"),
+        ],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="apple", destination="basket")],
+        spatial_relations=[], scene_id="scene",
+    )
+    context = build_planner_context(task, initial_state=PlannerInitialState(held_entity="apple"))
+    plan = SkillPlan(task_types=[TaskType.PICK_AND_PLACE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="basket-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="move", target_object="basket-01", semantic_target="container_interior"),
+        SkillStep(step_id="step-3", operation_id="op-1", skill_name="locate", target_object="apple-01"),
+        SkillStep(step_id="step-4", operation_id="op-1", skill_name="move", target_object="apple-01", semantic_target="relative_motion"),
+        SkillStep(step_id="step-5", operation_id="op-1", skill_name="release", target_object="apple-01", reference_object="basket-01", semantic_target="container_interior"),
+    ])
+    with pytest.raises(ValueError, match="semantic_plan_invalid"):
+        validate_semantic_plan(plan, task, context)
+
+
+def test_pick_and_place_rejects_release_with_wrong_reference():
+    task = GroundedTask(
+        instruction="place apple in basket", task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", category="fruit", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="basket", semantic_name="basket", object_id="basket-01", category="container", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="box", semantic_name="box", object_id="box-01", category="container", grounding_method="asset_scene_binding"),
+        ],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.PICK_AND_PLACE, source="apple", destination="basket")],
+        spatial_relations=[], scene_id="scene",
+    )
+    context = build_planner_context(task, initial_state=PlannerInitialState(held_entity="apple"))
+    plan = SkillPlan(task_types=[TaskType.PICK_AND_PLACE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="box-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="move", target_object="box-01", semantic_target="container_interior"),
+        SkillStep(step_id="step-3", operation_id="op-1", skill_name="release", target_object="apple-01", reference_object="box-01", semantic_target="container_interior"),
+    ])
+    with pytest.raises(ValueError, match="semantic_plan_invalid"):
+        validate_semantic_plan(plan, task, context)
+
+
+def test_release_and_move_operations_require_their_terminal_effects():
+    apple = GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", category="fruit", grounding_method="asset_scene_binding")
+    release_task = GroundedTask(
+        instruction="release apple", task_types=[TaskType.RELEASE], entities=[apple],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.RELEASE, target="apple")], spatial_relations=[], scene_id="scene",
+    )
+    release_context = build_planner_context(release_task, initial_state=PlannerInitialState(held_entity="apple"))
+    locate_only = SkillPlan(task_types=[TaskType.RELEASE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="apple-01"),
+    ])
+    with pytest.raises(ValueError, match="release operation did not execute release"):
+        validate_semantic_plan(locate_only, release_task, release_context)
+    release_then_regrasp = SkillPlan(task_types=[TaskType.RELEASE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="release", target_object="apple-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="locate", target_object="apple-01"),
+        SkillStep(step_id="step-3", operation_id="op-1", skill_name="move", target_object="apple-01", semantic_target="grasp_region"),
+        SkillStep(step_id="step-4", operation_id="op-1", skill_name="grasp", target_object="apple-01"),
+    ])
+    with pytest.raises(ValueError, match="release operation ended holding released target"):
+        validate_semantic_plan(release_then_regrasp, release_task, release_context)
+
+    move_task = GroundedTask(
+        instruction="move apple", task_types=[TaskType.MOVE], entities=[apple],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.MOVE, target="apple")], spatial_relations=[], scene_id="scene",
+    )
+    move_context = build_planner_context(move_task)
+    move_locate_only = SkillPlan(task_types=[TaskType.MOVE], steps=[
+        SkillStep(step_id="step-1", operation_id="op-1", skill_name="locate", target_object="apple-01"),
+        SkillStep(step_id="step-2", operation_id="op-1", skill_name="move", target_object="apple-01", semantic_target="grasp_region"),
+    ])
+    with pytest.raises(ValueError, match="move operation did not execute matching semantic move"):
+        validate_semantic_plan(move_locate_only, move_task, move_context)
+
+
+@pytest.mark.parametrize(
+    ("task_type", "skills", "message"),
+    [
+        (TaskType.OPEN, ("pull", "push"), "open operation did not end with matching pull"),
+        (TaskType.CLOSE, ("push", "pull"), "close operation did not end with matching push"),
+    ],
+)
+def test_mechanism_operation_requires_matching_final_effect(task_type, skills, message):
+    task = GroundedTask(
+        instruction=task_type.value, task_types=[task_type],
+        entities=[
+            GroundedEntity(entity_id="door", semantic_name="door", object_id="door-01", category="door", grounding_method="interaction_registry"),
+            GroundedEntity(entity_id="handle", semantic_name="handle", object_id="handle-01", category="handle", grounding_method="interaction_registry"),
+        ],
+        operations=[Operation(operation_id="op-1", task_type=task_type, target="door", reference="handle")],
+        spatial_relations=[], scene_id="scene",
+    )
+    registry = {"objects": {
+        "door-01": {"action_requests": {"pull": {}, "push": {}}},
+        "handle-01": {"spatial": {"anchors": {"grasp": {}}}, "affordances": {
+            "mechanism": {"acting_target": "door-01", "contact_target": "handle-01"},
+        }},
+    }}
+    context = build_planner_context(task, registry, initial_state=PlannerInitialState(held_entity="handle"))
+    plan = SkillPlan(task_types=[task_type], steps=[
+        SkillStep(step_id=f"step-{index}", operation_id="op-1", skill_name=skill, target_object="door-01", reference_object="handle-01")
+        for index, skill in enumerate(skills, 1)
+    ])
+    with pytest.raises(ValueError, match=message):
+        validate_semantic_plan(plan, task, context)
+
+
 def test_specific_missing_asset_does_not_fallback_by_category():
     with pytest.raises(KeyError, match="asset_missing"):
         AssetRegistry().resolve("container", "cup")
+    with pytest.raises(KeyError, match="asset_missing"):
+        AssetRegistry().resolve("container", "cup", aliases=["container"])
+
+
+def test_generic_ball_can_use_category_asset_but_baseball_stays_exact():
+    registry = AssetRegistry()
+    generic = registry.resolve("ball", "球")
+    specific = registry.resolve("ball", "棒球")
+    assert generic.model_name == "baseball"
+    assert specific.model_name == "baseball"
 
 
 def test_world_relations_apply_hard_filter_then_nearest_ranking():
@@ -199,6 +362,21 @@ def test_nearest_distance_tie_is_ambiguous():
             intent,
             {"apple": [{"object_id": "a1"}, {"object_id": "a2"}], "basket": [{"object_id": "basket-1"}]},
             {"a1": (-0.1, 0.0, 0.0), "a2": (0.1, 0.0, 0.0), "basket-1": (0.0, 0.0, 0.0)},
+        )
+
+
+def test_rightmost_tie_is_ambiguous():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
+        entities=[TaskEntity(entity_id="apple", semantic_name="apple", category="fruit")],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.RIGHTMOST)],
+    )
+    with pytest.raises(RelationAmbiguous, match="distance tie"):
+        WorldRelationResolver().resolve(
+            intent,
+            {"apple": [{"object_id": "a1"}, {"object_id": "a2"}]},
+            {"a1": (0.2, 0.0, 0.0), "a2": (0.2, 0.1, 0.0)},
         )
 
 
@@ -237,10 +415,90 @@ def test_inside_selection_requires_and_uses_container_bounds():
     assert selected["apple"]["object_id"] == "a1"
 
 
+def test_inside_selection_requires_full_subject_aabb_containment():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
+        entities=_entities(), operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.INSIDE, reference="basket")],
+    )
+    selected = WorldRelationResolver().resolve(
+        intent,
+        {"apple": [{"object_id": "center-only"}, {"object_id": "contained"}], "basket": [{"object_id": "basket-1"}]},
+        {"center-only": (0.08, 0.0, 0.0), "contained": (0.0, 0.0, 0.0), "basket-1": (0.0, 0.0, 0.0)},
+        bounds={
+            "basket-1": ((-0.1, -0.1, -0.1), (0.1, 0.1, 0.1)),
+            "center-only": ((0.03, -0.05, -0.05), (0.13, 0.05, 0.05)),
+            "contained": ((-0.05, -0.05, -0.05), (0.05, 0.05, 0.05)),
+        },
+    )
+    assert selected["apple"]["object_id"] == "contained"
+
+
+def test_generated_scene_inside_constraint_rejects_partial_aabb_overlap():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="inside", task_types=[TaskType.GRASP],
+        entities=_entities(), operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.INSIDE, reference="basket")],
+    )
+    registry = SceneRegistry(
+        scene_id="inside-aabb", robot="ur5e",
+        objects=[
+            SceneObject(object_id="apple-1", body_name="apple-1", role="target", semantic_name="apple", position=(0.08, 0.0, 0.0), dimensions_m=(0.1, 0.1, 0.1)),
+            SceneObject(object_id="basket-1", body_name="basket-1", role="target", semantic_name="basket", position=(0.0, 0.0, 0.0), dimensions_m=(0.2, 0.2, 0.2)),
+        ],
+        bindings={"apple": "apple-1", "basket": "basket-1"},
+    )
+    with pytest.raises(SceneConstraintError, match="inside relation not satisfied"):
+        validate_generated_scene(intent, registry)
+
+
 def test_name_matching_does_not_use_dangerous_substrings():
     assert exact_name_match("apple", "apple_01")
     assert not exact_name_match("apple", "pineapple")
     assert not exact_name_match("ball", "baseball")
+    assert not exact_name_match("cup", "cupcake")
+
+
+@pytest.mark.parametrize(
+    ("query", "existing"),
+    [("apple", "pineapple"), ("ball", "baseball"), ("cup", "cupcake")],
+)
+def test_grounding_semantic_cache_rejects_substring_matches(query, existing):
+    object_id = f"{existing}_01"
+    registry = SceneRegistry(
+        scene_id="safe-matching", robot="ur5e",
+        objects=[SceneObject(
+            object_id=object_id, body_name=object_id, role="target",
+            semantic_name=existing, source="uploaded",
+        )],
+    )
+    entity = TaskEntity(entity_id="query", semantic_name=query, category="object")
+    candidates = _semantic_cache_candidates(
+        [entity], {"objects": {object_id: {"labels": [existing]}}}, registry,
+    )
+    assert candidates == {"query": []}
+
+
+@pytest.mark.parametrize("goal_relation", [SpatialRelationType.RIGHT, SpatialRelationType.RIGHTMOST])
+def test_goal_unary_relation_does_not_change_initial_scene_placement(goal_relation):
+    class GoalProvider:
+        def __init__(self, with_goal):
+            self.with_goal = with_goal
+
+        def understand(self, request):
+            return TaskParseLLMOutput(
+                status="accepted",
+                entities=[ParseEntity(id="apple", name="apple", category="fruit")],
+                operations=[ParseOperation(type="grasp", target="apple")],
+                relations=[ParseRelation(scope="goal", subject="apple", relation=goal_relation)] if self.with_goal else [],
+            )
+
+    baseline = PipelineEngine(understanding=GoalProvider(False)).plan("抓苹果", seed=17)
+    goal = PipelineEngine(understanding=GoalProvider(True)).plan("抓苹果", seed=17)
+    baseline_position = next(item["position"] for item in baseline.scene_registry["objects"] if item["semantic_name"] == "apple")
+    goal_position = next(item["position"] for item in goal.scene_registry["objects"] if item["semantic_name"] == "apple")
+    assert goal_position == baseline_position
+    assert len(goal.scene_registry["objects"]) == 1
 
 
 def test_generated_scene_preserves_inside_selection_relation(tmp_path):
