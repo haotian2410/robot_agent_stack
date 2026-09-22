@@ -29,3 +29,17 @@ class SceneEditIntent(BaseModel):
     relation: str | None = None
     reference: str | None = None
 
+
+class SceneQueryType(StrEnum):
+    COUNT = "count"
+    POSITION = "position"
+    STATE = "state"
+    EXISTENCE = "existence"
+
+
+class SceneQueryIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query_type: SceneQueryType
+    semantic_name: str | None = None
+    category: str | None = None
+    referent: bool = False

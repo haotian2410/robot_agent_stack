@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..contracts.task_intent import Operation, SpatialRelationType, TaskType
-from ..contracts.turn import SceneEditIntent, SceneEditType, TurnKind
+from ..contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
 from .skill_planning import LLMOperationPlan, LLMPlanStep, SkillPlanLLMOutput
 from .task_understanding import ParseEntity, ParseOperation, ParseRelation, TaskParseLLMOutput
 from .vision_grounding import VisionCandidate, VisionLLMOutput
@@ -42,7 +42,10 @@ class FakeTaskUnderstandingProvider:
                 ),
             )
         if any(token in text for token in ("几个", "多少", "数量", "在哪里", "状态")) or ("位置" in text and any(token in text for token in ("当前", "查询", "报告"))):
-            return TaskParseLLMOutput(status="accepted", turn_kind=TurnKind.SCENE_QUERY)
+            query_type = SceneQueryType.COUNT if any(token in text for token in ("几个", "多少", "数量")) else SceneQueryType.POSITION if any(token in text for token in ("在哪里", "位置")) else SceneQueryType.STATE
+            labels = (("苹果", "apple", "fruit"), ("香蕉", "banana", "fruit"), ("棒球", "baseball", "ball"), ("篮子", "basket", "container"))
+            match = next(((name, category) for zh, name, category in labels if zh in text or name in low), None)
+            return TaskParseLLMOutput(status="accepted", turn_kind=TurnKind.SCENE_QUERY, scene_query=SceneQueryIntent(query_type=query_type, semantic_name=match[0] if match else None, category=match[1] if match else None, referent=any(token in text for token in ("它", "刚才那个", "这个"))))
         diagonals = ("东北", "东南", "西北", "西南", "左前方", "右前方", "斜上方", "左上方", "右下方", "northeast", "northwest", "southeast", "southwest", "diagonal")
         motion_words = ("移动", "移到", "往左", "往右", "往前", "往后", "往上", "往下", "move")
         # Composite directions are ambiguous only when they modify the

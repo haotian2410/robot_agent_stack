@@ -204,6 +204,49 @@ def test_partial_interaction_registry_uses_cached_missing_entity_without_vision(
     assert vision.calls_count == 0
 
 
+def test_current_scene_allows_optional_vision_fallback_with_qwen_budget(monkeypatch, tmp_path):
+    class RecordingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([VisionDetection(entity_id="blue_box_01", bbox=[300, 300, 400, 400])])
+            self.calls_count = 0
+
+        def detect(self, request):
+            self.calls_count += 1
+            return super().detect(request)
+
+    vision = RecordingVision()
+    engine, scene = _two_object_route_b(monkeypatch, tmp_path, vision)
+    registry = engine.backend.load_uploaded(scene, "ur5e")
+    result = engine.plan_current_scene(
+        "把红球放到蓝色盒子", scene_path=scene, scene_registry=registry, origin="uploaded",
+        robot="ur5e", planner="qwen", output_dir=tmp_path / "current", semantic_map={"objects": {"scene_object_001": {"labels": ["red ball"]}}},
+    )
+    assert result.status == "accepted"
+    assert result.model_call_count == 3
+    assert vision.calls_count == 1
+
+
+def test_current_scene_semantic_cache_hit_skips_optional_vision(monkeypatch, tmp_path):
+    class FailingVision(FakeVisionGroundingProvider):
+        def detect(self, request):
+            raise AssertionError("semantic cache hit must not call vision")
+
+    vision = FailingVision([])
+    engine, scene = _two_object_route_b(monkeypatch, tmp_path, vision)
+    registry = engine.backend.load_uploaded(scene, "ur5e")
+    result = engine.plan_current_scene(
+        "把红球放到蓝色盒子", scene_path=scene, scene_registry=registry, origin="uploaded",
+        robot="ur5e", planner="qwen", output_dir=tmp_path / "current-cache",
+        semantic_map={"objects": {
+            "scene_object_001": {"labels": ["red ball"]},
+            "scene_object_002": {"labels": ["blue box"]},
+        }},
+    )
+    assert result.status == "accepted"
+    assert result.model_call_count == 2
+    assert result.visual_grounding["method"] == "semantic_cache"
+
+
 def test_qwen_provider_sends_fixed_stage_and_extracts_json(monkeypatch, tmp_path):
     calls = []
 

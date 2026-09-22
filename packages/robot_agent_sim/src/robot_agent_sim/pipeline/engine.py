@@ -16,7 +16,7 @@ from ..grounding.segmentation import SceneObservation
 from ..grounding.interaction_registry import ground_partial_with_interaction_registry, ground_with_interaction_registry
 from ..grounding.world_relation import WorldRelationResolver
 from ..execution.interaction_registry_builder import build_generated_registry
-from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded
+from ..models.budget import ModelCallBudget, ModelCallBudgetExceeded, ModelCallMode
 from ..models.fake import FakeSkillPlanningProvider, FakeTaskUnderstandingProvider, FakeVisionGroundingProvider
 from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
 from ..models.task_understanding import TaskParseLLMOutput, TaskUnderstandingRequest, enrich_task
@@ -64,22 +64,26 @@ class PipelineEngine:
         recomputed from the presence of ``scene_path`` and no new scene is
         composed or uploaded during later turns.
         """
+        kwargs.pop("planning_mode", None)
         return self.plan(
             instruction,
             robot=kwargs.pop("robot", "ur5e"),
             scene=Path(scene_path),
             current_registry=scene_registry,
             session_origin=origin,
+            planning_mode=ModelCallMode.CURRENT_SCENE,
             **kwargs,
         )
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
         if planner not in {"recipe", "qwen", "auto"}:
             raise ValueError(f"unsupported planner: {planner}")
-        budget = ModelCallBudget.for_route(scene is not None and current_registry is None, planner)
+        if planning_mode is None:
+            planning_mode = ModelCallMode.CURRENT_SCENE if current_registry is not None else (ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL)
+        budget = ModelCallBudget.for_mode(planning_mode, planner)
         if session_origin is not None:
             route = "A" if session_origin.casefold() == "generated" else "B"
         else:

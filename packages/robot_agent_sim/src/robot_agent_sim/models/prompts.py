@@ -26,6 +26,10 @@ motion direction 仅允许 left/right/front/back/up/down；东=right、西=left�
 {"status":"accepted","turn_kind":"robot_task","scene_edit":null,"entities":[{"id":"red_block","name":"红色方块","category":"object","color":"red"},{"id":"blue_box","name":"蓝色盒子","category":"container","color":"blue"}],"operations":[{"type":"pick_and_place","source":"red_block","destination":"blue_box"}],"relations":[],"raw_direction":null,"raw_task":null}
 例如“在篮子右边增加一个香蕉”应返回：
 {"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":"right_of","reference":"basket"},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
+例如“现在有几个苹果”应返回：
+{"status":"accepted","turn_kind":"scene_query","scene_query":{"query_type":"count","semantic_name":"apple","category":"fruit","referent":false},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
+例如“它在哪里”在已有对话指代下应返回：
+{"status":"accepted","turn_kind":"scene_query","scene_query":{"query_type":"position","semantic_name":"apple","category":"fruit","referent":true},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
 例如“打开柜门”应返回 open operation，其中 target 是 cabinet_door、reference 是 cabinet_handle。
 实体 id 使用简短稳定的 snake_case；source/destination/target/reference 必须引用 entities 中的 id。"""
 

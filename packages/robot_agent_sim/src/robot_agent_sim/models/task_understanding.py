@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType
-from ..contracts.turn import SceneEditIntent, TurnKind
+from ..contracts.turn import SceneEditIntent, SceneQueryIntent, TurnKind
 
 
 class StrictModel(BaseModel):
@@ -53,6 +53,7 @@ class TaskParseLLMOutput(StrictModel):
     status: Literal["accepted", "unsupported_task", "direction_clarification_required"]
     turn_kind: TurnKind = TurnKind.ROBOT_TASK
     scene_edit: SceneEditIntent | None = None
+    scene_query: SceneQueryIntent | None = None
     entities: list[ParseEntity] = Field(default_factory=list)
     operations: list[ParseOperation] = Field(default_factory=list)
     relations: list[ParseRelation] = Field(default_factory=list)
@@ -66,10 +67,14 @@ class TaskParseLLMOutput(StrictModel):
             raise ValueError("accepted parse requires entities and operations")
         if self.status == "accepted" and self.turn_kind == TurnKind.SCENE_EDIT and self.scene_edit is None:
             raise ValueError("scene_edit turn requires scene_edit intent")
+        if self.status == "accepted" and self.turn_kind == TurnKind.SCENE_QUERY and self.scene_query is None:
+            raise ValueError("scene_query turn requires scene_query intent")
         if self.turn_kind != TurnKind.ROBOT_TASK and (self.entities or self.operations or self.relations):
             raise ValueError("non-robot turn must not contain a robot plan")
         if self.turn_kind != TurnKind.SCENE_EDIT and self.scene_edit is not None:
             raise ValueError("scene_edit intent is only valid for scene_edit turns")
+        if self.turn_kind != TurnKind.SCENE_QUERY and self.scene_query is not None:
+            raise ValueError("scene_query intent is only valid for scene_query turns")
         if self.status != "accepted" and (self.entities or self.operations or self.relations):
             raise ValueError("rejected parse must not include a plan")
         if self.status == "accepted" and self.raw_direction is not None and self.raw_direction not in {"left", "right", "front", "back", "up", "down"}:

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class ModelCallMode(StrEnum):
+    GENERATED_INITIAL = "generated_initial"
+    UPLOADED_INITIAL = "uploaded_initial"
+    CURRENT_SCENE = "current_scene"
 
 
 @dataclass(frozen=True)
@@ -25,12 +32,17 @@ class ModelCallBudget:
     stages: list[dict] = field(default_factory=list)
 
     @classmethod
+    def for_mode(cls, mode: ModelCallMode, planner: str = "qwen"):
+        if mode == ModelCallMode.GENERATED_INITIAL:
+            stages = ("task_understanding",) if planner == "recipe" else ("task_understanding", "skill_planning")
+        else:
+            stages = ("task_understanding", "vision_grounding") if planner == "recipe" else ("task_understanding", "vision_grounding", "skill_planning")
+        return cls(len(stages), stages, {stage: 1 for stage in stages})
+
+    @classmethod
     def for_route(cls, route_b: bool, planner: str = "qwen"):
-        if planner == "recipe":
-            stages = ("task_understanding", "vision_grounding") if route_b else ("task_understanding",)
-            return cls(2 if route_b else 1, stages, {stage: 1 for stage in stages})
-        stages = ("task_understanding", "vision_grounding", "skill_planning") if route_b else ("task_understanding", "skill_planning")
-        return cls(3 if route_b else 2, stages, {stage: 1 for stage in stages})
+        """Compatibility shim for callers outside the session pipeline."""
+        return cls.for_mode(ModelCallMode.UPLOADED_INITIAL if route_b else ModelCallMode.GENERATED_INITIAL, planner)
 
     def consume(self, stage: str):
         used = sum(1 for item in self.stages if item["stage"] == stage)

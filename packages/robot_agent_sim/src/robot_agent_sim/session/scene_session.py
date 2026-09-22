@@ -11,10 +11,11 @@ from typing import Any
 from ..execution.compiler import compile_directory
 from ..execution.session_client import SessionExecutorClient
 from ..pipeline.engine import PipelineEngine, PipelineResult
+from ..models.budget import ModelCallMode
 from ..scene.mutator import SceneMutator
 from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
-from .contracts import DialogueState, SceneEditIntent, SceneEditType, SemanticMap, SemanticObject, TurnKind, WorldState
+from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, TurnKind, WorldState
 
 
 class SceneSession:
@@ -54,12 +55,15 @@ class SceneSession:
         # will consume, while DialogueState still records the original text.
         task_instruction = self._resolve_dialogue_instruction(instruction)
         parsed_turn = self.engine.understand_turn(task_instruction)
+        referent_object_id = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
+        if parsed_turn.turn_kind == TurnKind.SCENE_QUERY and parsed_turn.scene_query is not None and any(token in instruction for token in ("它", "刚才那个", "这个")):
+            parsed_turn.scene_query.referent = True
         if parsed_turn.turn_kind == TurnKind.SCENE_EDIT:
             if parsed_turn.status != "accepted" or parsed_turn.scene_edit is None:
                 raise ValueError(parsed_turn.raw_task or "invalid scene edit")
             return self._run_scene_edit(instruction, parsed_turn.scene_edit, turn_dir)
         if parsed_turn.turn_kind == TurnKind.SCENE_QUERY:
-            query = self._run_scene_query(instruction) or "当前场景状态尚未初始化。"
+            query = self._run_scene_query(parsed_turn.scene_query, explicit_object_id=referent_object_id) or "当前场景状态尚未初始化。"
             self._record_dialogue(instruction)
             self._write_session()
             return {"status": "query_answer", "turn": self.turn_index, "turn_type": "scene_query", "answer": query, "scene_version": self.scene_version, "world_version": self.world_version}
@@ -97,6 +101,7 @@ class SceneSession:
             semantic_map=self.semantic_map.model_dump(mode="json"),
             explicit_object_id=self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) else None,
             parsed_turn=parsed_turn,
+            planning_mode=ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL,
         )
         if self.scene_version == 0:
             result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)
@@ -301,18 +306,31 @@ class SceneSession:
             resolved = resolved.replace(token, label)
         return resolved
 
-    def _run_scene_query(self, instruction: str) -> str | None:
-        if not re.search(r"几个|多少|数量|在哪里|位置|状态", instruction):
-            return None
-        normalized = instruction.casefold()
-        target = next((key for key, aliases in {"apple": ("苹果", "apple"), "banana": ("香蕉", "banana"), "baseball": ("棒球", "baseball"), "basket": ("篮子", "basket")}.items() if any(alias in instruction or alias in normalized for alias in aliases)), None)
-        if target is None or self.world_state is None:
+    def _run_scene_query(self, query: SceneQueryIntent | None, *, explicit_object_id: str | None = None) -> str | None:
+        if query is None or self.world_state is None:
             return "当前场景状态尚未初始化。"
-        matches = [object_id for object_id, item in self.semantic_map.objects.items() if target in object_id.casefold() or any(target in label.casefold() for label in item.labels)]
-        if "几个" in instruction or "多少" in instruction or "数量" in instruction:
-            return f"当前有 {len(matches)} 个{self._zh_label(target)}。"
-        positions = [self.world_state.objects[object_id].position for object_id in matches if object_id in self.world_state.objects]
-        return f"当前{self._zh_label(target)}位置：{positions[0]}。" if positions else f"当前未找到{self._zh_label(target)}。"
+        if query.referent and explicit_object_id:
+            matches = [explicit_object_id] if explicit_object_id in self.world_state.objects else []
+        else:
+            semantic = (query.semantic_name or "").casefold()
+            matches = [
+                object_id for object_id, item in self.semantic_map.objects.items()
+                if object_id in self.world_state.objects
+                and (not semantic or semantic in object_id.casefold() or any(semantic in label.casefold() for label in item.labels))
+                and (query.category is None or item.category in {None, query.category})
+            ]
+        label = self._zh_label(query.semantic_name or "目标")
+        if query.query_type == SceneQueryType.COUNT:
+            return f"当前有 {len(matches)} 个{label}。"
+        if query.query_type == SceneQueryType.EXISTENCE:
+            return f"当前{'存在' if matches else '不存在'}{label}。"
+        if query.query_type == SceneQueryType.STATE:
+            if not matches:
+                return f"当前未找到{label}。"
+            held = self.world_state.held_object in matches
+            return f"{label}当前{'正在被抓取' if held else '未被抓取'}。"
+        positions = [self.world_state.objects[object_id].position for object_id in matches]
+        return f"当前{label}位置：{positions[0]}。" if positions else f"当前未找到{label}。"
 
     def _write_session(self) -> None:
         payload = {"session_id": self.session_id, "origin": self.origin, "scene_version": self.scene_version, "world_version": self.world_version, "turn_index": self.turn_index, "scene_path": str(self.scene_path) if self.scene_path else None, "interaction_registry": str(self.interaction_registry) if self.interaction_registry else None, "next_instance_index": self.next_instance_index, "execution_history": self.execution_history}

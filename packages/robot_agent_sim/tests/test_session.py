@@ -52,6 +52,18 @@ def test_dialogue_referent_keeps_stable_object_id(tmp_path):
         session.close()
 
 
+def test_scene_query_uses_dialogue_binding_and_world_state(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("抓苹果")
+        selected = first["result"]["grounded_task"]["entities"][0]["object_id"]
+        query = session.run_turn("它在哪里")
+        assert query["turn_type"] == "scene_query"
+        assert str(session.world_state.objects[selected].position) in query["answer"]
+    finally:
+        session.close()
+
+
 def test_remove_held_object_is_rejected(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:

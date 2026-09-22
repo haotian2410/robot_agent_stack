@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
-from ..contracts.turn import SceneEditIntent, SceneEditType, TurnKind
+from ..contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, TurnKind
 
 
 class ObjectWorldState(BaseModel):
