@@ -21,9 +21,10 @@ def ground_with_interaction_registry(
     *,
     intent=None,
     positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
+    bounds: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] | None = None,
 ) -> list[GroundedEntity]:
     grounded, missing = ground_partial_with_interaction_registry(
-        entities, registry_path, scene_path, intent=intent, positions=positions
+        entities, registry_path, scene_path, intent=intent, positions=positions, bounds=bounds
     )
     if missing:
         names = ", ".join(entity.semantic_name for entity in missing)
@@ -38,6 +39,7 @@ def ground_partial_with_interaction_registry(
     *,
     intent=None,
     positions: dict[str, tuple[float, float, float] | list[float]] | None = None,
+    bounds: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] | None = None,
 ) -> tuple[list[GroundedEntity], list[Any]]:
     """Ground the subset covered by an authored registry.
 
@@ -81,7 +83,7 @@ def ground_partial_with_interaction_registry(
         }
         selected = {
             entity_id: value["object_id"]
-            for entity_id, value in WorldRelationResolver().resolve(intent, resolver_candidates, positions).items()
+            for entity_id, value in WorldRelationResolver().resolve(intent, resolver_candidates, positions, bounds=bounds).items()
         }
     else:
         used: set[str] = set()

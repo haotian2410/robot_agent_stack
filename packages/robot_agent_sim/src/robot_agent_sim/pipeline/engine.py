@@ -135,6 +135,7 @@ class PipelineEngine:
                         scene,
                         intent=intent,
                         positions=world_positions or {item.object_id: item.world_position for item in observation.instances},
+                        bounds=_registry_bounds(registry, world_positions or {item.object_id: item.world_position for item in observation.instances}),
                     )
                     visual_grounding = {
                         "method": "interaction_registry",
@@ -211,7 +212,7 @@ class PipelineEngine:
                     }
                     unresolved_entities = [entity for entity in ground_entities if entity.entity_id not in cached_entities]
                     if cached_candidates and not unresolved_entities:
-                        selected = WorldRelationResolver().resolve(intent, cached_candidates, current_positions)
+                        selected = WorldRelationResolver().resolve(intent, cached_candidates, current_positions, bounds=_registry_bounds(registry, current_positions))
                         instance_by_id = {item.object_id: item for item in observation.instances}
                         grounded = [GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=selected[entity.entity_id]["object_id"], body_name=instance_by_id[selected[entity.entity_id]["object_id"]].body_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="semantic_cache", instance_bbox=instance_by_id[selected[entity.entity_id]["object_id"]].bbox) for entity in ground_entities]
                         visual_grounding = {"method": "semantic_cache", "vision_used": False}
@@ -242,7 +243,7 @@ class PipelineEngine:
                         for detection_id, object_id, score in matches:
                             candidate = next(item for item in relevant if item.detection_id == detection_id)
                             candidate_map[candidate.entity_id].append({"object_id": object_id, "detection_bbox": tuple(candidate.bbox), "instance_bbox": instance_by_id[object_id].bbox, "bbox_iou": score})
-                        selected = WorldRelationResolver().resolve(intent, candidate_map, positions)
+                        selected = WorldRelationResolver().resolve(intent, candidate_map, positions, bounds=_registry_bounds(registry, positions))
                         grounded = []
                         for entity in ground_entities:
                             choice = selected[entity.entity_id]; instance = instance_by_id[choice["object_id"]]
@@ -431,3 +432,18 @@ def _geometry_candidates(entities, registry) -> dict[str, list[dict[str, str]]]:
                 values.append({"object_id": item.object_id})
         result[entity.entity_id] = values
     return result
+
+
+def _registry_bounds(registry, positions):
+    bounds = {}
+    for item in registry.objects:
+        dimensions = item.dimensions_m
+        if not dimensions or item.object_id not in positions:
+            continue
+        center = positions[item.object_id]
+        half = tuple(float(value) / 2 for value in dimensions)
+        bounds[item.object_id] = (
+            tuple(center[index] - half[index] for index in range(3)),
+            tuple(center[index] + half[index] for index in range(3)),
+        )
+    return bounds

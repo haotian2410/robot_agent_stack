@@ -165,6 +165,22 @@ def test_name_matching_does_not_use_dangerous_substrings():
     assert not exact_name_match("ball", "baseball")
 
 
+def test_generated_scene_does_not_ignore_inside_selection_relation(tmp_path):
+    class InsideProvider:
+        def understand(self, request):
+            return TaskParseLLMOutput(
+                status="accepted",
+                entities=[
+                    ParseEntity(id="apple", name="apple", category="fruit"),
+                    ParseEntity(id="basket", name="basket", category="container"),
+                ],
+                operations=[ParseOperation(type="grasp", target="apple")],
+                relations=[ParseRelation(subject="apple", relation=SpatialRelationType.INSIDE, reference="basket")],
+            )
+    result = PipelineEngine(understanding=InsideProvider()).plan("抓篮子里的苹果", output_dir=tmp_path)
+    assert result.status == "scene_generation_constraint_failed"
+
+
 def test_model_output_must_be_one_json_object():
     assert _extract_json('{"ok":true}') == '{"ok": true}'
     assert _extract_json('```json\n{"ok":true}\n```') == '{"ok": true}'
