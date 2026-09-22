@@ -42,6 +42,7 @@ bbox=[ymin,xmin,ymax,xmax]，整数范围 0..1000；同一 entity 可以有多�
 SKILL_PLANNING_PROMPT = """你是机器人高层技能规划器。
 
 根据 operations 中的高层任务目标、task-relevant entities 的 category/affordances/semantic regions，以及 Atomic Skill Catalog 中每个技能的语义、preconditions 和 effects，自主组合 Atomic Skills 完成每个 operation。
+初始状态在 initial_state 中给出。如果目标已经处于 held_entity 状态，不要重复 grasp；直接完成后续移动/释放目标。
 
 规则：
 - high-level operation 只是目标，不是 Atomic Skill；不要假设任何预定义的高层任务 recipe；

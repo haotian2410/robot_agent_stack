@@ -15,6 +15,8 @@ from robot_agent_sim.models.task_understanding import ParseEntity, ParseOperatio
 from robot_agent_sim.models.motion_policy import MotionPolicy
 from robot_agent_sim.models.fake import FakeTaskUnderstandingProvider
 from robot_agent_sim.pipeline.engine import PipelineEngine
+from robot_agent_sim.grounding.world_relation import RelationAmbiguous, WorldRelationResolver
+from robot_agent_sim.grounding.name_matching import exact_name_match
 
 
 def _entities():
@@ -108,3 +110,55 @@ def test_candidate_pool_quantity_remains_supported():
     parsed = FakeTaskUnderstandingProvider().understand(request)
     assert parsed.entities[0].quantity_mode == QuantityMode.CANDIDATE_POOL
     assert enrich_task(parsed, request.instruction).status == TaskStatus.ACCEPTED
+
+
+def test_world_relations_apply_hard_filter_then_nearest_ranking():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
+        entities=_entities(), operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[
+            SpatialRelation(subject="apple", relation=SpatialRelationType.LEFT_OF, reference="basket"),
+            SpatialRelation(subject="apple", relation=SpatialRelationType.NEAREST, reference="basket"),
+        ],
+    )
+    selected = WorldRelationResolver().resolve(
+        intent,
+        {"apple": [{"object_id": "a-left-near"}, {"object_id": "a-right-near"}], "basket": [{"object_id": "basket-1"}]},
+        {"a-left-near": (-0.2, 0.0, 0.0), "a-right-near": (0.2, 0.0, 0.0), "basket-1": (0.0, 0.0, 0.0)},
+    )
+    assert selected["apple"]["object_id"] == "a-left-near"
+
+
+def test_nearest_distance_tie_is_ambiguous():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
+        entities=_entities(), operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.NEAREST, reference="basket")],
+    )
+    with pytest.raises(RelationAmbiguous, match="distance tie"):
+        WorldRelationResolver().resolve(
+            intent,
+            {"apple": [{"object_id": "a1"}, {"object_id": "a2"}], "basket": [{"object_id": "basket-1"}]},
+            {"a1": (-0.1, 0.0, 0.0), "a2": (0.1, 0.0, 0.0), "basket-1": (0.0, 0.0, 0.0)},
+        )
+
+
+def test_inside_selection_requires_and_uses_container_bounds():
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED, instruction="select", task_types=[TaskType.GRASP],
+        entities=_entities(), operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.INSIDE, reference="basket")],
+    )
+    selected = WorldRelationResolver().resolve(
+        intent,
+        {"apple": [{"object_id": "a1"}, {"object_id": "a2"}], "basket": [{"object_id": "basket-1"}]},
+        {"a1": (0.0, 0.0, 0.02), "a2": (0.3, 0.0, 0.0), "basket-1": (0.0, 0.0, 0.0)},
+        bounds={"basket-1": ((-0.1, -0.1, -0.1), (0.1, 0.1, 0.1))},
+    )
+    assert selected["apple"]["object_id"] == "a1"
+
+
+def test_name_matching_does_not_use_dangerous_substrings():
+    assert exact_name_match("apple", "apple_01")
+    assert not exact_name_match("apple", "pineapple")
+    assert not exact_name_match("ball", "baseball")

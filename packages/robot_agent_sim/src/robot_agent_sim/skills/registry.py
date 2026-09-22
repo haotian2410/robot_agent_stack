@@ -14,6 +14,7 @@ class SkillDefinition(BaseModel):
     preconditions: tuple[str, ...] = ()
     effects: tuple[str, ...] = ()
     required_affordances: tuple[str, ...] = ()
+    planner_visible: bool = True
 
 
 class AtomicSkillRegistry:
@@ -32,6 +33,8 @@ class AtomicSkillRegistry:
     def prompt_catalog(self) -> str:
         entries = []
         for item in self._items.values():
+            if not item.planner_visible:
+                continue
             lines = [item.prompt_signature, f"description: {item.description}"]
             if item.required_affordances:
                 lines.append(f"requires: {'|'.join(item.required_affordances)}")
@@ -54,7 +57,7 @@ class AtomicSkillRegistry:
 
 REGISTRY = AtomicSkillRegistry((
     SkillDefinition(name="locate", label="定位", description="定位已知语义目标", prompt_signature="locate(target)", effects=("target becomes located",)),
-    SkillDefinition(name="search", label="搜索", description="搜索尚未定位的任务目标", prompt_signature="search(target)", effects=("target becomes located",)),
+    SkillDefinition(name="search", label="搜索", description="搜索尚未定位的任务目标；GroundedTask 阶段不可用", prompt_signature="search(target)", effects=("target becomes located",), planner_visible=False),
     SkillDefinition(name="move", label="移动到", description="移动末端到目标的语义交互区域或按方向移动已抓取物体", prompt_signature="move(target,reference?,region?)", allowed_regions=("grasp_region", "container_interior", "button_surface", "relative_region", "relative_motion", "semantic_region"), preconditions=("target is located",), effects=("end effector reaches the requested semantic region",)),
     SkillDefinition(name="grasp", label="抓取", description="抓取已定位且可抓取的目标", prompt_signature="grasp(target)", required_affordances=("graspable",), preconditions=("target is located", "end effector has reached a valid grasp region"), effects=("target becomes held",)),
     SkillDefinition(name="release", label="释放", description="释放当前已抓取的目标", prompt_signature="release(target,reference?,region?)", allowed_regions=("container_interior", "relative_region", "semantic_region"), preconditions=("target is held",), effects=("target is no longer held",)),

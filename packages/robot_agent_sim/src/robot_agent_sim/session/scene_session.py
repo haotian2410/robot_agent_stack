@@ -102,6 +102,7 @@ class SceneSession:
             explicit_object_id=self.dialogue_state.referents.get("它") if any(token in instruction for token in ("它", "刚才那个", "这个")) else None,
             parsed_turn=parsed_turn,
             planning_mode=ModelCallMode.UPLOADED_INITIAL if scene is not None else ModelCallMode.GENERATED_INITIAL,
+            held_object_id=self.world_state.held_object if self.world_state else None,
         )
         if self.scene_version == 0:
             result: PipelineResult = self.engine.plan(task_instruction, scene=scene, **plan_kwargs)

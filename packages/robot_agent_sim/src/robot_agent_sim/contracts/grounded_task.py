@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .task_intent import Operation, SpatialRelation, TaskType
+from .task_intent import Operation, QuantityMode, SpatialRelation, TaskType
 
 
 class GroundedEntity(BaseModel):
@@ -13,6 +13,10 @@ class GroundedEntity(BaseModel):
     body_name: str | None = None
     model_id: str | None = None
     model_name: str | None = None
+    category: str | None = None
+    color: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    quantity_mode: QuantityMode = QuantityMode.SINGLE
     grounding_method: Literal[
         "asset_scene_binding", "vlm_iou", "detector_iou", "interaction_registry", "semantic_cache", "dialogue_binding"
     ]

@@ -12,6 +12,7 @@ from ..contracts.grounded_task import GroundedEntity, GroundedTask
 from ..contracts.task_intent import TaskStatus
 from ..contracts.turn import TurnKind
 from ..grounding.iou import match_detections
+from ..grounding.name_matching import exact_name_match
 from ..grounding.segmentation import SceneObservation
 from ..grounding.interaction_registry import ground_partial_with_interaction_registry, ground_with_interaction_registry
 from ..grounding.world_relation import WorldRelationResolver
@@ -22,10 +23,11 @@ from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
 from ..models.task_understanding import TaskParseLLMOutput, TaskUnderstandingRequest, enrich_task
 from ..models.motion_policy import MotionPolicy
 from ..models.vision_grounding import VisionGroundingRequest, VisionQuery
-from ..planning.context_builder import build_planner_context
+from ..planning.context_builder import PlannerInitialState, build_planner_context
 from ..planning.recipe_planner import RecipePlanner
 from ..planning.semantic_validator import validate_semantic_plan
 from ..scene.composer import SceneComposer
+from ..scene.constraints import SceneConstraintError, validate_generated_scene
 from ..skills.registry import REGISTRY
 
 
@@ -77,7 +79,7 @@ class PipelineEngine:
             **kwargs,
         )
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None, held_object_id: str | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -106,6 +108,7 @@ class PipelineEngine:
             if scene is None and current_registry is None:
                 assets = AssetResolver(self.assets).resolve_entities(intent.entities)
                 registry = SceneComposer().compose(intent, assets, robot, seed)
+                validate_generated_scene(intent, registry)
                 xml_path = self.backend.compose(registry, assets, out)
                 generated_interactions = build_generated_registry(
                     xml_path, registry, out / "interaction_registry.json"
@@ -117,7 +120,7 @@ class PipelineEngine:
                     if object_id is None: raise ValueError(f"no selected object for entity {entity.entity_id}")
                     item = registry.by_object_id(object_id)
                     instance = next(instance for instance in observation.instances if instance.object_id == object_id)
-                    grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, grounding_method="asset_scene_binding", instance_bbox=instance.bbox))
+                    grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="asset_scene_binding", instance_bbox=instance.bbox))
                 asset_bindings = {entity.entity_id: {"model_id": assets[entity.entity_id].model_id, "model_name": assets[entity.entity_id].model_name} for entity in intent.entities}
             else:
                 registry = current_registry or self.backend.load_uploaded(Path(scene), robot)
@@ -144,7 +147,7 @@ class PipelineEngine:
                             if len(values) == 1 and values[0]["object_id"] in instance_by_id:
                                 object_id = values[0]["object_id"]
                                 item = next(item for item in registry.objects if item.object_id == object_id)
-                                authored_grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, grounding_method="semantic_cache", instance_bbox=instance_by_id[object_id].bbox))
+                                authored_grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="semantic_cache", instance_bbox=instance_by_id[object_id].bbox))
                             else:
                                 still_missing.append(entity)
                         geometry_missing = _geometry_candidates(still_missing, registry)
@@ -154,7 +157,7 @@ class PipelineEngine:
                             if len(values) == 1 and values[0]["object_id"] in instance_by_id:
                                 object_id = values[0]["object_id"]
                                 item = next(item for item in registry.objects if item.object_id == object_id)
-                                authored_grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, grounding_method="detector_iou", instance_bbox=instance_by_id[object_id].bbox))
+                                authored_grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="detector_iou", instance_bbox=instance_by_id[object_id].bbox))
                             else:
                                 still_missing_after_geometry.append(entity)
                         missing_entities = still_missing_after_geometry
@@ -187,7 +190,8 @@ class PipelineEngine:
                         for detection_id, object_id, score in matches:
                             candidate = next(item for item in relevant if item.detection_id == detection_id)
                             instance = instance_by_id[object_id]
-                            authored_grounded.append(GroundedEntity(entity_id=candidate.entity_id, semantic_name=next(entity.semantic_name for entity in missing_entities if entity.entity_id == candidate.entity_id), object_id=object_id, body_name=instance.body_name, grounding_method="vlm_iou", detection_bbox=candidate.bbox, instance_bbox=instance.bbox, bbox_iou=score))
+                            source_entity = next(entity for entity in missing_entities if entity.entity_id == candidate.entity_id)
+                            authored_grounded.append(GroundedEntity(entity_id=candidate.entity_id, semantic_name=source_entity.semantic_name, object_id=object_id, body_name=instance.body_name, category=source_entity.category, color=source_entity.color, aliases=source_entity.aliases, quantity_mode=source_entity.quantity_mode, grounding_method="vlm_iou", detection_bbox=candidate.bbox, instance_bbox=instance.bbox, bbox_iou=score))
                     grounded = authored_grounded
                 else:
                     cached_candidates = _semantic_cache_candidates(ground_entities, semantic_map, registry)
@@ -206,7 +210,7 @@ class PipelineEngine:
                     if cached_candidates and not unresolved_entities:
                         selected = WorldRelationResolver().resolve(intent, cached_candidates, current_positions)
                         instance_by_id = {item.object_id: item for item in observation.instances}
-                        grounded = [GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=selected[entity.entity_id]["object_id"], body_name=instance_by_id[selected[entity.entity_id]["object_id"]].body_name, grounding_method="semantic_cache", instance_bbox=instance_by_id[selected[entity.entity_id]["object_id"]].bbox) for entity in ground_entities]
+                        grounded = [GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=selected[entity.entity_id]["object_id"], body_name=instance_by_id[selected[entity.entity_id]["object_id"]].body_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="semantic_cache", instance_bbox=instance_by_id[selected[entity.entity_id]["object_id"]].bbox) for entity in ground_entities]
                         visual_grounding = {"method": "semantic_cache", "vision_used": False}
                         asset_bindings = {}
                     else:
@@ -240,7 +244,7 @@ class PipelineEngine:
                         for entity in ground_entities:
                             choice = selected[entity.entity_id]; instance = instance_by_id[choice["object_id"]]
                             method = "semantic_cache" if entity.entity_id in cached_entities and entity.entity_id not in geometry_entities else ("detector_iou" if entity.entity_id in geometry_entities else "vlm_iou")
-                            grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=choice["object_id"], body_name=instance.body_name, grounding_method=method, detection_bbox=choice.get("detection_bbox"), instance_bbox=instance.bbox, bbox_iou=choice.get("bbox_iou")))
+                            grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=choice["object_id"], body_name=instance.body_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method=method, detection_bbox=choice.get("detection_bbox"), instance_bbox=instance.bbox, bbox_iou=choice.get("bbox_iou")))
                         asset_bindings = {}
 
             if explicit_object_id:
@@ -249,7 +253,8 @@ class PipelineEngine:
                 explicit_instance = next((item for item in observation.instances if item.object_id == explicit_object_id), None)
                 if explicit_entity_id and explicit_item is not None and explicit_instance is not None:
                     grounded = [entity for entity in grounded if entity.entity_id != explicit_entity_id]
-                    grounded.insert(0, GroundedEntity(entity_id=explicit_entity_id, semantic_name=next(entity.semantic_name for entity in intent.entities if entity.entity_id == explicit_entity_id), object_id=explicit_object_id, body_name=explicit_item.body_name, model_id=explicit_item.model_id, model_name=explicit_item.model_name, grounding_method="dialogue_binding", instance_bbox=explicit_instance.bbox))
+                    source_entity = next(entity for entity in intent.entities if entity.entity_id == explicit_entity_id)
+                    grounded.insert(0, GroundedEntity(entity_id=explicit_entity_id, semantic_name=source_entity.semantic_name, object_id=explicit_object_id, body_name=explicit_item.body_name, model_id=explicit_item.model_id, model_name=explicit_item.model_name, category=source_entity.category, color=source_entity.color, aliases=source_entity.aliases, quantity_mode=source_entity.quantity_mode, grounding_method="dialogue_binding", instance_bbox=explicit_instance.bbox))
             task = GroundedTask(instruction=intent.instruction, task_types=intent.task_types, entities=grounded, operations=intent.operations, spatial_relations=intent.spatial_relations, scene_id=registry.scene_id)
             recipe_supported = RecipePlanner.supports(task)
             if planner == "recipe" or (planner == "auto" and recipe_supported):
@@ -259,9 +264,11 @@ class PipelineEngine:
                 planner_used = "recipe"
             else:
                 planner_used = "qwen"
+                held_entity = next((entity.entity_id for entity in task.entities if entity.object_id == held_object_id), None)
                 context = build_planner_context(
                     task,
                     generated_interactions if scene is None else interaction_registry,
+                    initial_state=PlannerInitialState(held_entity=held_entity),
                 )
                 catalog = REGISTRY.prompt_catalog()
                 context_path = out / "planner_context.json"
@@ -322,7 +329,7 @@ class PipelineEngine:
                 else "unsupported_recipe" if "unsupported_recipe" in message
                 else "grounding_ambiguous" if "grounding_ambiguous" in message
                 else "relation_not_satisfied" if "relation_not_satisfied" in message
-                else "planning_failed"
+                else "scene_generation_constraint_failed" if isinstance(exc, SceneConstraintError) else "planning_failed"
             )
             failure_scene = None
             if scene is not None:
@@ -382,7 +389,7 @@ def _semantic_cache_candidates(entities, semantic_map: dict[str, Any] | None, re
             if object_id not in available:
                 continue
             labels = {str(object_id).casefold(), *(str(label).casefold() for label in value.get("labels", []))}
-            if any(token and (token in label or label in token) for token in query for label in labels):
+            if any(exact_name_match(token, label) for token in query for label in labels):
                 matches.append({"object_id": object_id})
         result[entity.entity_id] = matches
     return result
@@ -398,7 +405,7 @@ def _geometry_candidates(entities, registry) -> dict[str, list[dict[str, str]]]:
             if item.object_id.startswith("scene_object_") and str(item.semantic_name).casefold() == item.body_name.casefold():
                 continue
             names = {item.object_id.casefold(), item.body_name.casefold(), str(item.semantic_name).casefold()}
-            if any(query and (query in name or name in query) for query in queries for name in names):
+            if any(exact_name_match(query, name) for query in queries for name in names):
                 values.append({"object_id": item.object_id})
         result[entity.entity_id] = values
     return result

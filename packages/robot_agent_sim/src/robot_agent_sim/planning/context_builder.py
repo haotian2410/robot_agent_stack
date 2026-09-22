@@ -42,15 +42,21 @@ class PlannerGoal(_StrictModel):
     reference: str | None = None
 
 
+class PlannerInitialState(_StrictModel):
+    held_entity: str | None = None
+
+
 class PlannerContext(_StrictModel):
     operations: list[PlannerOperation]
     entities: list[PlannerEntity]
     goals: list[PlannerGoal] = Field(default_factory=list)
+    initial_state: PlannerInitialState = Field(default_factory=PlannerInitialState)
 
 
 def build_planner_context(
     task: GroundedTask,
     interaction_registry: str | Path | dict[str, Any] | None = None,
+    initial_state: PlannerInitialState | None = None,
 ) -> PlannerContext:
     """Return only operation-relevant semantic facts, never physical metadata."""
     registry = _load_registry(interaction_registry)
@@ -68,7 +74,7 @@ def build_planner_context(
     for entity_id in relevant:
         entity = grounded[entity_id]
         metadata = _metadata_for(objects, entity.object_id)
-        category = _infer_category(entity.semantic_name, entity.model_name, entity.object_id)
+        category = entity.category or _infer_category(entity.semantic_name, entity.model_name, entity.object_id)
         affordances, regions = _semantic_capabilities(metadata, category)
         projected[entity_id] = {
             "id": entity_id,
@@ -119,7 +125,7 @@ def build_planner_context(
         **projected[entity_id],
         "relations": tuple(dict.fromkeys(projected[entity_id]["relations"])),
     }) for entity_id in grounded if entity_id in projected]
-    return PlannerContext(operations=operations, entities=entities, goals=goals)
+    return PlannerContext(operations=operations, entities=entities, goals=goals, initial_state=initial_state or PlannerInitialState())
 
 
 def _load_registry(value: str | Path | dict[str, Any] | None) -> dict[str, Any]:
@@ -173,7 +179,7 @@ def _semantic_capabilities(metadata: dict[str, Any], category: str) -> tuple[tup
             affordances.add("graspable"); regions.add("grasp_region")
         elif category == "button":
             affordances.add("pressable"); regions.add("button_surface")
-        elif category == "location":
+        elif category in {"location", "container", "box", "basket"}:
             affordances.add("placeable"); regions.add("container_interior")
     return tuple(sorted(affordances)), tuple(sorted(regions))
 

@@ -11,6 +11,7 @@ import mujoco
 
 from ..contracts.grounded_task import GroundedEntity
 from .world_relation import WorldRelationResolver
+from .name_matching import exact_name_match, normalize_name
 
 
 def ground_with_interaction_registry(
@@ -54,26 +55,13 @@ def ground_partial_with_interaction_registry(
     candidates_by_entity: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     missing_entities = []
     for entity in entities:
-        query_values = {
-            _normalize(entity.semantic_name),
-            *(_normalize(value) for value in entity.aliases),
-        }
+        query_values = {entity.semantic_name, *entity.aliases}
         exact: list[tuple[str, dict[str, Any]]] = []
         fuzzy: list[tuple[str, dict[str, Any]]] = []
         for object_id, item in objects.items():
-            names = {
-                _normalize(object_id),
-                _normalize(str(item.get("object_id", object_id))),
-                *(_normalize(str(value)) for value in item.get("aliases", [])),
-            }
-            if query_values & names:
+            names = {object_id, str(item.get("object_id", object_id)), *(str(value) for value in item.get("aliases", []))}
+            if any(exact_name_match(query, name) for query in query_values for name in names):
                 exact.append((object_id, item))
-            elif any(
-                query and name and (query in name or name in query)
-                for query in query_values
-                for name in names
-            ):
-                fuzzy.append((object_id, item))
         candidates = exact or fuzzy
         if not candidates:
             missing_entities.append(entity)
@@ -121,6 +109,10 @@ def ground_partial_with_interaction_registry(
                 semantic_name=entity.semantic_name,
                 object_id=object_id,
                 body_name=_source_body_name(model, item),
+                category=entity.category,
+                color=entity.color,
+                aliases=entity.aliases,
+                quantity_mode=entity.quantity_mode,
                 grounding_method="interaction_registry",
             )
         )
