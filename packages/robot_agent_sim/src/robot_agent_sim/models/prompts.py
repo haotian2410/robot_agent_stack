@@ -8,7 +8,7 @@ TASK_UNDERSTANDING_PROMPT = """解析一次用户输入，只输出规定 JSON�
 - scene_edit：增加、删除或重定位场景实体，填写 scene_edit，entities/operations/relations 留空；
 - scene_query：询问当前场景数量、位置或状态，scene_edit 为 null，entities/operations/relations 留空；
 - session_control：会话控制，scene_edit 为 null，entities/operations/relations 留空。
-这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。
+这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。session_control 时填写 session_control.action（pause/resume/close），其余任务字段留空。
 支持 locate/search/move/grasp/release/pick_and_place/press/open/close。
 open/close 的 target 是门或抽屉，reference 是对应把手；不要把 open/close 当成底层控制指令。
 必须区分 motion direction 与 entity spatial selector。

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TurnKind(StrEnum):
@@ -50,3 +50,20 @@ class SceneQueryIntent(BaseModel):
     semantic_name: str | None = None
     category: str | None = None
     referent: bool = False
+
+    @model_validator(mode="after")
+    def requires_target(self):
+        if not self.referent and not self.semantic_name and not self.category:
+            raise ValueError("scene_query requires semantic_name/category or a dialogue referent")
+        return self
+
+
+class SessionControlType(StrEnum):
+    PAUSE = "pause"
+    RESUME = "resume"
+    CLOSE = "close"
+
+
+class SessionControlIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: SessionControlType
