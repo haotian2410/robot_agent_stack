@@ -260,7 +260,8 @@ class PipelineEngine:
             if planner == "recipe" or (planner == "auto" and recipe_supported):
                 if not recipe_supported:
                     raise ValueError("unsupported_recipe")
-                skill = RecipePlanner().plan(task)
+                held_entity = next((entity.entity_id for entity in task.entities if entity.object_id == held_object_id), None)
+                skill = RecipePlanner().plan(task, initial_held_entity=held_entity)
                 planner_used = "recipe"
             else:
                 planner_used = "qwen"

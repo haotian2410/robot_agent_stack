@@ -48,6 +48,7 @@ def test_dialogue_referent_keeps_stable_object_id(tmp_path):
         rebound = next(entity for entity in second["result"]["grounded_task"]["entities"] if entity["entity_id"].startswith("apple"))
         assert rebound["object_id"] == selected
         assert rebound["grounding_method"] == "dialogue_binding"
+        assert [step["skill_name"] for step in second["result"]["skill_plan"]["steps"]] == ["locate", "move", "release"]
     finally:
         session.close()
 

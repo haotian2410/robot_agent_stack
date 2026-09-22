@@ -70,7 +70,7 @@ RECIPE_DEFINITIONS = {
     "open": RecipeDefinition("open", _open), "close": RecipeDefinition("close", _close),
 }
 
-def validate_plan(plan, task) -> None:
+def validate_plan(plan, task, initial_held_entity=None) -> None:
     object_ids = {entity.object_id for entity in task.entities}
     operation_ids = [operation.operation_id for operation in task.operations]
     positions = {operation_id: index for index, operation_id in enumerate(operation_ids)}
@@ -95,7 +95,10 @@ def validate_plan(plan, task) -> None:
         by_operation[step.operation_id].append(step.skill_name)
     for operation in task.operations:
         actual = tuple(by_operation[operation.operation_id])
-        expected = tuple(item[0] for item in RECIPE_DEFINITIONS[operation.task_type.value].build(operation))
+        expected_recipe = RECIPE_DEFINITIONS[operation.task_type.value].build(operation)
+        if initial_held_entity and operation.task_type.value == "pick_and_place" and operation.source == initial_held_entity:
+            expected_recipe = expected_recipe[3:]
+        expected = tuple(item[0] for item in expected_recipe)
         if actual != expected:
             raise ValueError(f"invalid skill recipe for {operation.operation_id}: expected {expected}, got {actual}")
         for dependency in operation.depends_on:

@@ -22,14 +22,17 @@ class RecipePlanner:
                 return False
         return True
 
-    def plan(self, task) -> SkillPlan:
+    def plan(self, task, initial_held_entity: str | None = None) -> SkillPlan:
         if not self.supports(task):
             raise ValueError("unsupported_recipe")
         grounded = {entity.entity_id: entity.object_id for entity in task.entities}
         steps: list[SkillStep] = []
         for operation in task.operations:
             definition = RECIPE_DEFINITIONS[operation.task_type.value]
-            for skill, target_role, reference_role, region in definition.build(operation):
+            recipe = definition.build(operation)
+            if initial_held_entity and operation.task_type.value == "pick_and_place" and operation.source == initial_held_entity:
+                recipe = recipe[3:]
+            for skill, target_role, reference_role, region in recipe:
                 target_entity = getattr(operation, target_role) if target_role else None
                 reference_entity = getattr(operation, reference_role) if reference_role else None
                 target = grounded.get(target_entity) if target_entity else None
@@ -47,5 +50,5 @@ class RecipePlanner:
                     depends_on=[steps[-1].step_id] if steps else [],
                 ))
         plan = SkillPlan(task_types=task.task_types, steps=steps)
-        validate_plan(plan, task)
+        validate_plan(plan, task, initial_held_entity=initial_held_entity)
         return plan
