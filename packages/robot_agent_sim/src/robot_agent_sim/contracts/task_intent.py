@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from ..semantics.operation_contracts import validate_operation_contract, validate_relation_consistency
 
 
 class TaskStatus(StrEnum):
@@ -70,8 +71,19 @@ class SpatialRelation(BaseModel):
     scope: Literal["scene", "selection", "goal"] = "selection"
     @model_validator(mode="after")
     def check_relation(self):
-        if self.relation in {SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST} and self.reference is None:
-            raise ValueError("selection relation requires reference")
+        binary = {
+            SpatialRelationType.LEFT_OF, SpatialRelationType.RIGHT_OF,
+            SpatialRelationType.FRONT_OF, SpatialRelationType.BEHIND,
+            SpatialRelationType.ABOVE, SpatialRelationType.BELOW,
+            SpatialRelationType.INSIDE, SpatialRelationType.NEAREST,
+            SpatialRelationType.FARTHEST,
+        }
+        if self.relation in binary and self.reference is None:
+            raise ValueError(f"task_semantic_invalid: {self.relation.value} requires reference")
+        if self.relation not in binary and self.reference is not None:
+            raise ValueError(f"task_semantic_invalid: unary {self.relation.value} forbids reference")
+        if self.reference is not None and self.subject == self.reference:
+            raise ValueError("task_semantic_invalid: relation subject and reference must differ")
         return self
 
 
@@ -118,6 +130,7 @@ class TaskIntent(BaseModel):
                 raise ValueError("invalid operation depends_on")
             if any(operation_position[dependency] >= operation_position[op.operation_id] for dependency in op.depends_on):
                 raise ValueError("operation depends_on must point to an earlier operation")
+            validate_operation_contract(op)
         for rel in self.spatial_relations:
             if rel.subject not in entity_ids or (rel.reference and rel.reference not in entity_ids):
                 raise ValueError("spatial relation references unknown entity")
@@ -129,4 +142,5 @@ class TaskIntent(BaseModel):
                 raise ValueError("mixed describes the task as a whole, not an operation")
             if not operation_types <= set(self.task_types):
                 raise ValueError("task_types must include every operation task_type")
+            validate_relation_consistency(self.spatial_relations)
         return self

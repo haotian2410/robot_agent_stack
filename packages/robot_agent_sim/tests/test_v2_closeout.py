@@ -86,15 +86,13 @@ class UnsupportedRecipeProvider:
         )
 
 
-@pytest.mark.parametrize("route_scene, expected_calls", [(False, 2), (True, 3)])
-def test_auto_unsupported_recipe_falls_back_to_qwen_budget(tmp_path, route_scene, expected_calls):
+@pytest.mark.parametrize("route_scene", [False, True])
+def test_auto_rejects_schema_valid_but_semantically_invalid_task(tmp_path, route_scene):
     vision = FakeVisionGroundingProvider([VisionDetection(entity_id="button_01", bbox=[710, 412, 867, 525])]) if route_scene else None
     result = PipelineEngine(understanding=UnsupportedRecipeProvider(), vision=vision).plan(
         "按按钮", robot="ur5e", scene=SCENE_003 if route_scene else None,
         planner="auto", output_dir=tmp_path / f"auto-{route_scene}",
     )
-    assert result.model_call_count == expected_calls
-    assert result.route == ("B" if route_scene else "A")
-    assert result.planner == "qwen"
-    assert result.model_usage["calls"] == expected_calls
+    assert result.status == "task_semantic_invalid"
+    assert result.model_call_count == 1
     assert Path(result.artifacts["model_usage.json"]).is_file()

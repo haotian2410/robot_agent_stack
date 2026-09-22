@@ -307,7 +307,17 @@ class PipelineEngine:
                     raw_path = out / "raw_skill_plan.json"
                     raw_path.write_text(json.dumps(raw_value, ensure_ascii=False, indent=2), encoding="utf-8")
                     planner_artifacts["raw_skill_plan.json"] = str(raw_path)
-            status = "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded) else ("asset_missing" if "asset_missing" in str(exc) else ("unsupported_recipe" if "unsupported_recipe" in str(exc) else ("grounding_ambiguous" if "grounding_ambiguous" in str(exc) else ("relation_not_satisfied" if "relation_not_satisfied" in str(exc) else "planning_failed"))))
+            message = str(exc)
+            status = (
+                "model_call_budget_exceeded" if isinstance(exc, ModelCallBudgetExceeded)
+                else "clarification_required" if "semantic_conflict:" in message
+                else "task_semantic_invalid" if "task_semantic_invalid:" in message
+                else "asset_missing" if "asset_missing" in message
+                else "unsupported_recipe" if "unsupported_recipe" in message
+                else "grounding_ambiguous" if "grounding_ambiguous" in message
+                else "relation_not_satisfied" if "relation_not_satisfied" in message
+                else "planning_failed"
+            )
             failure_scene = None
             if scene is not None:
                 failure_scene = str(Path(scene).resolve())
