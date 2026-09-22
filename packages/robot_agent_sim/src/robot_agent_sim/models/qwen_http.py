@@ -37,6 +37,7 @@ class QwenHTTPProvider:
         # Structured final responses are retained for observability even when
         # the subsequent Pydantic contract validation rejects them.
         self.last_raw_values: dict[str, Any] = {}
+        self.last_raw_text: dict[str, str] = {}
         self.stage_max_completion_tokens = stage_max_completion_tokens or {
             # Chained open/pick/place/close tasks can contain several entity
             # and operation records.  256 tokens truncates valid JSON from
@@ -93,6 +94,7 @@ class QwenHTTPProvider:
             if isinstance(content, list): content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
             if not isinstance(content, str) or not content.strip():
                 raise QwenProviderError(f"{stage}: empty model content")
+            self.last_raw_text[stage] = content
             extracted = _extract_json(content)
             finish_reason = body.get("choices", [{}])[0].get("finish_reason")
             record = {"stage": stage, "status": "succeeded", "model": self.model, "prompt_tokens": body.get("usage", {}).get("prompt_tokens"), "completion_tokens": body.get("usage", {}).get("completion_tokens"), "finish_reason": finish_reason}
@@ -134,6 +136,7 @@ class QwenHTTPProvider:
             "operations": [item.model_dump(mode="json") for item in request.context.operations],
             "entities": [item.model_dump(mode="json") for item in request.context.entities],
             "goals": [item.model_dump(mode="json") for item in request.context.goals],
+            "initial_state": request.context.initial_state.model_dump(mode="json"),
             "skills": request.skill_catalog,
         })
         raw_text = self._call("skill_planning", SKILL_PLANNING_PROMPT, content)

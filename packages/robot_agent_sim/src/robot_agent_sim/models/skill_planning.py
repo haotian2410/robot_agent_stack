@@ -57,12 +57,13 @@ def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPl
         operation = operations[operation_plan.id]
         raw_steps = operation_plan.steps
         if operation.motion_direction and operation.task_type.value == "move":
+            primary_role = "target" if operation.target is not None else "source"
             raw_steps = [
-                LLMPlanStep(skill="locate", target="target"),
-                LLMPlanStep(skill="move", target="target", region="grasp_region"),
-                LLMPlanStep(skill="grasp", target="target"),
-                LLMPlanStep(skill="move", target="target", region="relative_motion"),
-                LLMPlanStep(skill="release", target="target"),
+                LLMPlanStep(skill="locate", target=primary_role),
+                LLMPlanStep(skill="move", target=primary_role, region="grasp_region"),
+                LLMPlanStep(skill="grasp", target=primary_role),
+                LLMPlanStep(skill="move", target=primary_role, region="relative_motion"),
+                LLMPlanStep(skill="release", target=primary_role),
             ]
         for raw in raw_steps:
             target_entity = getattr(operation, raw.target) if raw.target else None

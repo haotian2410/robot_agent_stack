@@ -7,9 +7,9 @@ from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
 from robot_agent_sim.contracts.skill_plan import SkillPlan, SkillStep
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskType
 from robot_agent_sim.models.prompts import SKILL_PLANNING_PROMPT
-from robot_agent_sim.models.skill_planning import SkillPlanLLMOutput
+from robot_agent_sim.models.skill_planning import SkillPlanLLMOutput, enrich_skill_plan
 from robot_agent_sim.models.qwen_http import QwenHTTPProvider, QwenProviderError
-from robot_agent_sim.planning.context_builder import build_planner_context
+from robot_agent_sim.planning.context_builder import PlannerInitialState, build_planner_context
 from robot_agent_sim.planning.recipe_planner import RecipePlanner
 from robot_agent_sim.planning.semantic_validator import validate_semantic_plan
 from robot_agent_sim.skills.registry import REGISTRY
@@ -46,6 +46,21 @@ def test_context_projects_semantics_and_excludes_physics():
     assert "placeable" in by_id["upper_compartment_01"].affordances
     for forbidden in ("position", "quaternion", "joint", "trajectory", "bbox", "body_name"):
         assert forbidden not in payload
+
+
+def test_directional_move_override_preserves_source_role():
+    task = GroundedTask(
+        instruction="move baseball right",
+        task_types=[TaskType.MOVE],
+        entities=[GroundedEntity(entity_id="baseball", semantic_name="baseball", object_id="baseball-01", grounding_method="asset_scene_binding")],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.MOVE, source="baseball", motion_direction="right", distance_m=0.05)],
+        spatial_relations=[], scene_id="scene",
+    )
+    output = SkillPlanLLMOutput(operations=[{"id": "op-1", "steps": []}])
+    plan = enrich_skill_plan(output, task)
+    assert [step.skill_name for step in plan.steps] == ["locate", "move", "grasp", "move", "release"]
+    assert all(step.target_object == "baseball-01" for step in plan.steps)
+    assert plan.steps[3].semantic_target == "relative_motion"
 
 
 def test_catalog_and_prompt_do_not_leak_recipes():
@@ -107,6 +122,28 @@ def test_root_single_operation_is_rejected_and_raw_is_retained(monkeypatch):
         provider.plan(SkillPlanningRequest(context=context, skill_catalog=REGISTRY.prompt_catalog()))
     assert provider.last_raw_values["skill_planning"] == {"id": "op-1", "steps": []}
     assert provider.calls[-1]["prompt_tokens"] == 17
+
+
+@pytest.mark.parametrize("held_entity", ["red_ball_01", None])
+def test_qwen_skill_payload_explicitly_contains_initial_state(monkeypatch, held_entity):
+    class Response:
+        status_code = 200
+        def raise_for_status(self): return None
+        def json(self):
+            return {"choices": [{"message": {"content": '{"operations": []}'}}], "usage": {}}
+
+    captured = []
+    def fake_post(url, **kwargs):
+        captured.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", fake_post)
+    provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
+    from robot_agent_sim.models.skill_planning import SkillPlanningRequest
+    context = build_planner_context(cabinet_task(), SIDECAR, PlannerInitialState(held_entity=held_entity))
+    provider.plan(SkillPlanningRequest(context=context, skill_catalog=REGISTRY.prompt_catalog()))
+    payload = json.loads(captured[0]["messages"][1]["content"])
+    assert payload["initial_state"] == {"held_entity": held_entity}
 
 
 def test_qwen_response_finish_reason_is_recorded(monkeypatch):
