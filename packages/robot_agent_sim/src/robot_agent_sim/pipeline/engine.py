@@ -10,6 +10,7 @@ from ..assets.registry import AssetRegistry
 from ..assets.resolver import AssetResolver
 from ..backends.mujoco.backend import MujocoSceneBackend
 from ..contracts.grounded_task import GroundedEntity, GroundedTask
+from ..contracts.goal import GoalCondition
 from ..contracts.task_intent import TaskStatus
 from ..contracts.turn import TurnKind
 from ..grounding.iou import match_detections
@@ -276,6 +277,7 @@ class PipelineEngine:
                 else "asset_missing" if "asset_missing" in message
                 else "unsupported_recipe" if "unsupported_recipe" in message
                 else "grounding_ambiguous" if "grounding_ambiguous" in message
+                else "grounding_candidate_incomplete" if "grounding_candidate_incomplete" in message
                 else "grounding_failed" if "grounding_failed" in message
                 else "relation_not_satisfied" if "relation_not_satisfied" in message
                 else "scene_generation_constraint_failed" if isinstance(exc, SceneConstraintError) else "planning_failed"
@@ -309,7 +311,13 @@ class PipelineEngine:
             for value in values:
                 if value.get("world_position") is not None:
                     positions.setdefault(value["object_id"], value["world_position"])
-        unresolved = [entity for entity in entities if not candidate_map.get(entity.entity_id)]
+        def required_count(entity):
+            return max(int(entity.count), 2) if entity.quantity_mode.value == "candidate_pool" else 1
+
+        unresolved = [
+            entity for entity in entities
+            if len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) < required_count(entity)
+        ]
         vision_used = bool(unresolved)
         visual_grounding = {
             "method": "candidate_map",
@@ -322,7 +330,7 @@ class PipelineEngine:
                 value for relation in intent.spatial_relations if relation.scope == "selection"
                 for value in (relation.subject, relation.reference) if value
             }
-            queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=entity.entity_id in selection_entities) for entity in unresolved]
+            queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=(entity.quantity_mode.value == "candidate_pool" or entity.entity_id in selection_entities)) for entity in unresolved]
             budget.consume("vision_grounding")
             detection = self.vision.detect(VisionGroundingRequest(entities=queries, rgb_path=str(observation.rgb_path)))
             self._capture(budget, "vision_grounding", self.vision)
@@ -352,6 +360,19 @@ class PipelineEngine:
                     object_id=object_id, sources={"vision"}, detection_bbox=tuple(candidate.bbox),
                     instance_bbox=instance_by_id[object_id].bbox, bbox_iou=score,
                 ))
+        incomplete = [
+            (entity.entity_id, required_count(entity), len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}))
+            for entity in entities
+            if len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) < required_count(entity)
+        ]
+        if incomplete:
+            raise GroundingResolutionError(
+                "grounding_candidate_incomplete: " + "; ".join(
+                    f"{entity_id} expected at least {expected}, resolved {resolved}"
+                    for entity_id, expected, resolved in incomplete
+                ),
+                visual_grounding,
+            )
         selected = WorldRelationResolver().resolve(
             intent, candidate_map, positions, bounds=_registry_bounds(registry, positions)
         )
@@ -407,15 +428,43 @@ class PipelineEngine:
                 if step.get("operation_id") not in operation_ids:
                     operation_ids.append(step.get("operation_id"))
             operation_outcomes = [{"operation_id": operation_id, "result": "completed"} for operation_id in operation_ids]
+        semantic_plan_outcomes = [
+            {"operation_id": item["operation_id"], "status": "plan_validated"}
+            for item in operation_outcomes
+        ]
+        goal_conditions = []
+        if isinstance(result.task_intent, dict):
+            for relation in result.task_intent.get("spatial_relations", []):
+                if relation.get("scope") == "goal":
+                    goal_conditions.append(GoalCondition(
+                        relation=relation["relation"],
+                        subject=relation["subject"],
+                        reference=relation.get("reference"),
+                    ).model_dump(mode="json"))
+            for operation in result.task_intent.get("operations", []):
+                task_type = operation.get("task_type")
+                subject = operation.get("source") or operation.get("target")
+                reference = operation.get("destination") or operation.get("reference")
+                inferred = {"pick_and_place": "inside", "grasp": "held", "release": "not_held", "open": "open", "close": "closed"}.get(task_type)
+                if inferred and subject:
+                    goal_conditions.append(GoalCondition(relation=inferred, subject=subject, reference=reference).model_dump(mode="json"))
         semantic_validation = {
             "task_intent_validation": {"status": "accepted" if result.task_intent else "missing"},
             "grounding_validation": {"status": "accepted" if result.grounded_task else (result.status if "grounding" in result.status else "not_run")},
-            "skill_plan_validation": {"status": "accepted" if result.skill_plan else (result.status if result.planner == "qwen" else "not_run"), "operation_outcomes": operation_outcomes},
+            "skill_plan_validation": {
+                "status": "accepted" if result.skill_plan else (result.status if result.planner == "qwen" else "not_run"),
+                # Keep operation_outcomes for compatibility; the explicit
+                # semantic_plan_outcomes field avoids implying physical
+                # execution success.
+                "operation_outcomes": operation_outcomes,
+                "semantic_plan_outcomes": semantic_plan_outcomes,
+                "execution_goal_status": "not_verified",
+            },
             "semantic_repairs": result.task_intent.get("semantic_repairs", []) if isinstance(result.task_intent, dict) else [],
             "status": result.status,
             "error": result.error,
         }
-        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "semantic_validation.json": semantic_validation, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
+        payloads = {"task_intent.json": result.task_intent, "scene_registry.json": result.scene_registry, "grounded_task.json": result.grounded_task, "visual_grounding.json": result.visual_grounding, "skill_plan.json": result.skill_plan, "goal_conditions.json": goal_conditions, "semantic_validation.json": semantic_validation, "model_usage.json": result.model_usage, "summary.json": {"status": result.status, "route": result.route, "planner": result.planner, "model_call_count": result.model_call_count, "model_usage": result.model_usage, "planning_provenance": provenance, "error": result.error, "source_scene": result.source_scene, "interaction_registry": result.interaction_registry}}
         for name, payload in payloads.items():
             path = out / name
             if payload is None:

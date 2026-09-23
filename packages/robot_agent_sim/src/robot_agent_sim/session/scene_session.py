@@ -20,6 +20,10 @@ from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQuery
 from .referent_binder import DialogueBinding, ReferentBinder
 
 
+class SceneQueryAmbiguous(ValueError):
+    """A query needs one object but matched multiple scene instances."""
+
+
 class SceneSession:
     """Unify Route A/B initialization with a persistent multi-turn runtime."""
 
@@ -70,7 +74,12 @@ class SceneSession:
                 raise ValueError(parsed_turn.raw_task or "invalid scene edit")
             return self._run_scene_edit(instruction, parsed_turn.scene_edit, turn_dir)
         if parsed_turn.turn_kind == TurnKind.SCENE_QUERY:
-            query = self._run_scene_query(parsed_turn.scene_query, explicit_object_id=referent_object_id) or "当前场景状态尚未初始化。"
+            try:
+                query = self._run_scene_query(parsed_turn.scene_query, explicit_object_id=referent_object_id) or "当前场景状态尚未初始化。"
+            except SceneQueryAmbiguous as exc:
+                self._record_dialogue(instruction)
+                self._write_session()
+                return {"status": "clarification_required", "turn_type": "scene_query", "turn": self.turn_index, "error": str(exc), "scene_version": self.scene_version, "world_version": self.world_version}
             self._record_dialogue(instruction)
             self._write_session()
             return {"status": "query_answer", "turn": self.turn_index, "turn_type": "scene_query", "answer": query, "scene_version": self.scene_version, "world_version": self.world_version}
@@ -187,7 +196,7 @@ class SceneSession:
         next_scene_version = self.scene_version + 1
         scene_dir = self.output_root / "scene" / f"v{next_scene_version:04d}"
         if edit.operation == SceneEditType.ADD:
-            if not edit.reference:
+            if not edit.reference or not edit.relation:
                 message = (
                     f"要增加{self._zh_label(edit.semantic_name)}，请说明它相对于哪个场景物体以及放置方向；"
                     "例如：在篮子右边增加一个香蕉。"
@@ -229,7 +238,7 @@ class SceneSession:
                 semantic_name=edit.semantic_name,
                 category=edit.category,
                 object_id=object_id,
-                relation=edit.relation or "right_of",
+                relation=edit.relation,
                 reference_object=reference_id,
                 current_positions=positions,
                 output_dir=scene_dir,
@@ -263,6 +272,11 @@ class SceneSession:
 
     def _resolve_semantic_object(self, query: str) -> str:
         normalized = query.casefold()
+        # The tabletop is an implicit scene support surface, not an
+        # interactable object in SceneRegistry.  It is still a valid anchor
+        # for placement edits such as “在桌子左边增加一个篮子”.
+        if normalized in {"table", "桌子", "桌面", "台面", "work_table"}:
+            return "__table__"
         aliases = {"basket": {"basket", "篮子", "篮"}, "banana": {"banana", "香蕉"}, "apple": {"apple", "苹果"}, "baseball": {"baseball", "棒球"}}
         tokens = aliases.get(normalized, {normalized})
         matches = []
@@ -404,8 +418,21 @@ class SceneSession:
             matches = [
                 object_id for object_id, item in self.semantic_map.objects.items()
                 if object_id in self.world_state.objects
-                and (not semantic or exact_name_match(semantic, object_id) or any(exact_name_match(semantic, label) for label in item.labels))
-                and (query.category is None or item.category in {None, query.category})
+                and (
+                    not semantic
+                    or exact_name_match(semantic, object_id)
+                    or any(exact_name_match(semantic, label) for label in item.labels)
+                )
+                and (
+                    query.category is None
+                    or item.category == query.category
+                    # An exact semantic-name match is sufficient when the
+                    # imported registry omitted the category metadata.
+                    or (item.category is None and (
+                        exact_name_match(semantic, object_id)
+                        or any(exact_name_match(semantic, label) for label in item.labels)
+                    ))
+                )
             ]
         label = self._zh_label(query.semantic_name or "目标")
         if query.query_type == SceneQueryType.COUNT:
@@ -415,8 +442,12 @@ class SceneSession:
         if query.query_type == SceneQueryType.STATE:
             if not matches:
                 return f"当前未找到{label}。"
+            if len(matches) > 1:
+                raise SceneQueryAmbiguous(f"当前找到 {len(matches)} 个{label}，请进一步说明是哪个{label}。")
             held = self.world_state.held_object in matches
             return f"{label}当前{'正在被抓取' if held else '未被抓取'}。"
+        if query.query_type == SceneQueryType.POSITION and len(matches) > 1:
+            raise SceneQueryAmbiguous(f"当前找到 {len(matches)} 个{label}，请进一步说明是哪个{label}。")
         positions = [self.world_state.objects[object_id].position for object_id in matches]
         return f"当前{label}位置：{positions[0]}。" if positions else f"当前未找到{label}。"
 

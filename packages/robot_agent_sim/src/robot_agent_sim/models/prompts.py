@@ -5,7 +5,8 @@ import json
 
 TASK_UNDERSTANDING_PROMPT = """解析一次用户输入，只输出规定 JSON。每次只能选择一个 turn_kind：
 - robot_task：需要机器人执行的任务；
-- scene_edit：增加、删除或重定位场景实体，填写 scene_edit，entities/operations/relations 留空；
+- scene_edit：增加或删除场景实体，填写 scene_edit，entities/operations/relations 留空；
+- scene_edit 的 add 必须同时填写 relation 和 reference；如果用户没有说明相对哪个物体及方向，返回 clarification_required，不要猜测 right_of；“桌子/桌面”是可用的隐式支撑面参照物；
 - scene_query：询问当前场景数量、位置或状态，scene_edit 为 null，entities/operations/relations 留空；
 - session_control：会话控制，scene_edit 为 null，entities/operations/relations 留空。
 这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。session_control 时填写 session_control.action（pause/resume/close），其余任务字段留空。

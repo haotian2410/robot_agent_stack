@@ -35,6 +35,8 @@ def validate_generated_scene(intent, registry) -> None:
                 values = [math.dist(item.position[:2], reference_position[:2]) for item in candidates]
                 selected_value = math.dist(positions[subject_id][:2], reference_position[:2])
                 expected = min(values) if relation.relation == SpatialRelationType.NEAREST else max(values)
+                if sum(abs(value - expected) <= 1e-6 for value in values) != 1:
+                    raise SceneConstraintError(f"scene_generation_constraint_failed: {relation.relation} is not unique")
             else:
                 axis, high = {
                     SpatialRelationType.LEFTMOST: (0, False), SpatialRelationType.RIGHTMOST: (0, True),
@@ -44,6 +46,8 @@ def validate_generated_scene(intent, registry) -> None:
                 values = [item.position[axis] for item in candidates]
                 selected_value = positions[subject_id][axis]
                 expected = max(values) if high else min(values)
+                if sum(abs(value - expected) <= 1e-6 for value in values) != 1:
+                    raise SceneConstraintError(f"scene_generation_constraint_failed: {relation.relation} is not unique")
             if abs(selected_value - expected) > 1e-6:
                 raise SceneConstraintError(f"scene_generation_constraint_failed: {relation.relation} not satisfied")
             continue

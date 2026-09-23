@@ -51,6 +51,9 @@ _CONFLICTS = {
     "front_of": "behind", "behind": "front_of",
     "above": "below", "below": "above",
     "nearest": "farthest", "farthest": "nearest",
+    "leftmost": "rightmost", "rightmost": "leftmost",
+    "frontmost": "backmost", "backmost": "frontmost",
+    "highest": "lowest", "lowest": "highest",
 }
 
 

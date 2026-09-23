@@ -9,6 +9,7 @@ from robot_agent_sim.models.fake import FakeVisionGroundingProvider
 from robot_agent_sim.models.qwen_http import QwenHTTPProvider
 from robot_agent_sim.models.task_understanding import TaskUnderstandingRequest
 from robot_agent_sim.models.vision_grounding import VisionDetection
+from robot_agent_sim.models.budget import ModelCallBudget, ModelCallMode
 from robot_agent_sim.pipeline.engine import PipelineEngine
 from robot_agent_sim.grounding.interaction_registry import ground_partial_with_interaction_registry
 from robot_agent_sim.contracts.task_intent import TaskEntity, TaskIntent, TaskStatus, TaskType, Operation, SpatialRelation, SpatialRelationType
@@ -16,6 +17,7 @@ from robot_agent_sim.scene.registry import SceneObject, SceneRegistry
 from robot_agent_sim.grounding.segmentation import InstanceObservation, SceneObservation
 from robot_agent_sim.contracts.grounded_task import GroundedEntity, GroundedTask
 from robot_agent_sim.contracts.task_intent import Operation, TaskType
+from robot_agent_sim.grounding.candidates import GroundingCandidate
 
 
 SCENE_003 = Path(__file__).parents[1] / "assets/robots/ur5e/scenes/scene_003.xml"
@@ -56,10 +58,10 @@ def test_route_b_auto_discovers_task_body_and_grounding_artifact(tmp_path):
     validation = json.loads(Path(result.artifacts["semantic_validation.json"]).read_text())
     assert validation["task_intent_validation"]["status"] == "accepted"
     assert validation["grounding_validation"]["status"] == "accepted"
-    assert validation["skill_plan_validation"] == {
-        "status": "accepted",
-        "operation_outcomes": [{"operation_id": "op-1", "result": "completed"}],
-    }
+    assert validation["skill_plan_validation"]["status"] == "accepted"
+    assert validation["skill_plan_validation"]["operation_outcomes"] == [{"operation_id": "op-1", "result": "completed"}]
+    assert validation["skill_plan_validation"]["semantic_plan_outcomes"] == [{"operation_id": "op-1", "status": "plan_validated"}]
+    assert validation["skill_plan_validation"]["execution_goal_status"] == "not_verified"
 
 
 def test_route_b_sidecar_takes_precedence(tmp_path):
@@ -177,6 +179,55 @@ def test_route_b_semantic_cache_skips_second_vision_call(tmp_path):
     assert second.status == "accepted"
     assert second.visual_grounding["method"] == "semantic_cache"
     assert vision.calls_count == 1
+
+
+def test_candidate_pool_cache_is_completed_by_vision_before_ranking(tmp_path):
+    class CountingVision(FakeVisionGroundingProvider):
+        def __init__(self):
+            super().__init__([
+                VisionDetection(entity_id="apple", bbox=[200, 200, 300, 300]),
+                VisionDetection(entity_id="apple", bbox=[400, 400, 500, 500]),
+            ])
+            self.requests = []
+
+        def detect(self, request):
+            self.requests.append(request)
+            return super().detect(request)
+
+    from robot_agent_sim.contracts.task_intent import QuantityMode, SpatialRelation, SpatialRelationType
+
+    intent = TaskIntent(
+        status=TaskStatus.ACCEPTED,
+        instruction="three apples, rightmost",
+        task_types=[TaskType.GRASP],
+        entities=[TaskEntity(entity_id="apple", semantic_name="apple", category="fruit", count=3, quantity_mode=QuantityMode.CANDIDATE_POOL)],
+        operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+        spatial_relations=[SpatialRelation(subject="apple", relation=SpatialRelationType.RIGHTMOST)],
+    )
+    observation = SceneObservation(
+        scene_id="three", camera_id="scene", image_width_px=640, image_height_px=480,
+        rgb_path=tmp_path / "rgb.png", segmentation_path=tmp_path / "seg.npy",
+        segmentation_visualization_path=tmp_path / "seg.png", instance_index_path=tmp_path / "instances.json",
+        instances=[
+            InstanceObservation(object_id="apple_01", body_name="apple_01", bbox=(100, 100, 180, 180), visible_pixel_count=10, world_position=(-0.2, 0, 0)),
+            InstanceObservation(object_id="apple_02", body_name="apple_02", bbox=(200, 200, 300, 300), visible_pixel_count=10, world_position=(0.0, 0, 0)),
+            InstanceObservation(object_id="apple_03", body_name="apple_03", bbox=(400, 400, 500, 500), visible_pixel_count=10, world_position=(0.2, 0, 0)),
+        ],
+    )
+    vision = CountingVision()
+    engine = PipelineEngine(vision=vision)
+    grounded, _ = engine._resolve_candidate_map(
+        intent,
+        intent.entities,
+        {"apple": [GroundingCandidate(object_id="apple_01", sources={"semantic_map"}).model_dump(mode="json")]},
+        SceneRegistry(scene_id="three", robot="ur5e", objects=[]),
+        observation,
+        {"apple_01": (-0.2, 0, 0), "apple_02": (0.0, 0, 0), "apple_03": (0.2, 0, 0)},
+        ModelCallBudget.for_mode(ModelCallMode.CURRENT_SCENE, "recipe"),
+    )
+    assert len(vision.requests) == 1
+    assert vision.requests[0].entities[0].all is True
+    assert grounded[0].object_id == "apple_03"
 
 
 def _two_object_route_b(monkeypatch, tmp_path, vision):

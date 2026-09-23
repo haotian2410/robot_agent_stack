@@ -52,6 +52,18 @@ def test_scene_query_existence_is_structured(tmp_path):
         session.close()
 
 
+def test_scene_query_position_with_multiple_matches_requires_clarification(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果抓起来")
+        assert first["report"]["success"] is True
+        result = session.run_turn("苹果在哪里")
+        assert result["status"] == "clarification_required"
+        assert "个苹果" in result["error"]
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize(
     ("query", "existing"),
     [("apple", "pineapple"), ("ball", "baseball"), ("cup", "cupcake")],
@@ -217,6 +229,24 @@ def test_scene_edit_without_reference_returns_clarification(tmp_path):
         session.close()
 
 
+def test_scene_edit_without_relation_returns_clarification(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        assert first["report"]["success"] is True
+        turn_dir = session.output_root / "turns" / "0002"
+        turn_dir.mkdir(parents=True)
+        result = session._run_scene_edit(
+            "在篮子旁边增加一个香蕉",
+            SceneEditIntent(operation=SceneEditType.ADD, semantic_name="banana", category="fruit", reference="basket"),
+            turn_dir,
+        )
+        assert result["status"] == "clarification_required"
+        assert "放置方向" in result["error"]
+    finally:
+        session.close()
+
+
 def test_scene_edit_with_unknown_reference_returns_clarification(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
@@ -238,6 +268,30 @@ def test_scene_edit_with_unknown_reference_returns_clarification(tmp_path):
         assert result["status"] == "clarification_required"
         assert "找不到" in result["error"]
         assert session.scene_version == 1
+    finally:
+        session.close()
+
+
+def test_scene_edit_can_use_table_as_implicit_reference(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        assert first["report"]["success"] is True
+        turn_dir = session.output_root / "turns" / "0002"
+        turn_dir.mkdir(parents=True)
+        result = session._run_scene_edit(
+            "在桌子左边增加一个篮子",
+            SceneEditIntent(
+                operation=SceneEditType.ADD,
+                semantic_name="basket",
+                category="container",
+                relation="left_of",
+                reference="table",
+            ),
+            turn_dir,
+        )
+        assert result["status"] == "scene_updated"
+        assert any(item["object_id"] == "basket_02" for item in session.scene_registry["objects"])
     finally:
         session.close()
 

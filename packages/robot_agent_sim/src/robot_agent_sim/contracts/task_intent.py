@@ -12,6 +12,7 @@ class TaskStatus(StrEnum):
     DIRECTION_CLARIFICATION_REQUIRED = "direction_clarification_required"
     INVALID = "invalid"
     UNSUPPORTED_MULTI_OBJECT_EXECUTION = "unsupported_multi_object_execution"
+    CLARIFICATION_REQUIRED = "clarification_required"
 
 
 class TaskType(StrEnum):

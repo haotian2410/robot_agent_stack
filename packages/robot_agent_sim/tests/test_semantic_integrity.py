@@ -113,6 +113,23 @@ def test_all_quantity_is_rejected_instead_of_silently_executing_one():
     assert intent.operations == []
 
 
+def test_multiple_directional_moves_require_clarification():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[
+            ParseEntity(id="apple", name="apple", category="fruit"),
+            ParseEntity(id="banana", name="banana", category="fruit"),
+        ],
+        operations=[
+            ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.05),
+            ParseOperation(type="move", target="banana", motion_direction="right", distance_m=0.10),
+        ],
+    )
+    intent = enrich_task(parsed, "苹果左移5厘米，然后香蕉右移10厘米")
+    assert intent.status == TaskStatus.CLARIFICATION_REQUIRED
+    assert intent.operations == []
+
+
 def test_candidate_pool_quantity_remains_supported():
     request = type("Request", (), {"instruction": "把三个苹果中靠近篮子的苹果放进篮子"})()
     parsed = FakeTaskUnderstandingProvider().understand(request)
@@ -377,6 +394,26 @@ def test_rightmost_tie_is_ambiguous():
             intent,
             {"apple": [{"object_id": "a1"}, {"object_id": "a2"}]},
             {"a1": (0.2, 0.0, 0.0), "a2": (0.2, 0.1, 0.0)},
+        )
+
+
+@pytest.mark.parametrize(
+    "relations",
+    [
+        [SpatialRelation(subject="apple", relation=SpatialRelationType.LEFTMOST), SpatialRelation(subject="apple", relation=SpatialRelationType.RIGHTMOST)],
+        [SpatialRelation(subject="apple", relation=SpatialRelationType.FRONTMOST), SpatialRelation(subject="apple", relation=SpatialRelationType.BACKMOST)],
+        [SpatialRelation(subject="apple", relation=SpatialRelationType.HIGHEST), SpatialRelation(subject="apple", relation=SpatialRelationType.LOWEST)],
+    ],
+)
+def test_opposite_ranking_relations_are_semantic_conflicts(relations):
+    with pytest.raises(ValueError, match="semantic_conflict"):
+        TaskIntent(
+            status=TaskStatus.ACCEPTED,
+            instruction="conflicting ranking",
+            task_types=[TaskType.GRASP],
+            entities=[TaskEntity(entity_id="apple", semantic_name="apple", category="fruit")],
+            operations=[Operation(operation_id="op-1", task_type=TaskType.GRASP, target="apple")],
+            spatial_relations=relations,
         )
 
 

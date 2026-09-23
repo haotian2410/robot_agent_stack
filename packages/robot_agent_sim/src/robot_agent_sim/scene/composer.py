@@ -113,7 +113,16 @@ class SceneComposer:
             candidate_count = max(int(entity.count), 2)
             candidates = []
             for index in range(candidate_count):
-                if index == 0:
+                if relation and relation.relation in {SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST}:
+                    # A tabletop-only layout would give every candidate the
+                    # same z score.  Stack candidates with a deterministic
+                    # clearance so highest/lowest has a unique optimum.
+                    preferred = (
+                        reference.position[0] if reference else 0.0,
+                        (reference.position[1] if reference else 0.0) + 0.12 * index,
+                        0.10 * index,
+                    )
+                elif index == 0:
                     preferred = ((reference.position[0] + 0.12) if reference else 0.12, reference.position[1] if reference else 0.0)
                 else:
                     preferred = (

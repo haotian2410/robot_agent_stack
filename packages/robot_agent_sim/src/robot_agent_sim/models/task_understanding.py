@@ -195,6 +195,12 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             instruction=instruction,
             explanation="当前执行器暂不支持一次性对多个同类物体重复执行任务，请一次指定一个物体或使用候选筛选条件。",
         )
+    if len([operation for operation in operations if operation.task_type == TaskType.MOVE and operation.motion_direction is not None]) > 1 and explicit_move_count > 1:
+        return TaskIntent(
+            status=TaskStatus.CLARIFICATION_REQUIRED,
+            instruction=instruction,
+            explanation="当前一次任务只支持一个明确的方向移动，请拆成多个连续指令。",
+        )
     return TaskIntent(
         status=parsed.status, instruction=instruction, task_types=task_types,
         entities=[TaskEntity(entity_id=e.id, semantic_name=e.name, category=e.category, color=e.color, count=e.count, quantity_mode=e.quantity_mode) for e in parsed.entities],

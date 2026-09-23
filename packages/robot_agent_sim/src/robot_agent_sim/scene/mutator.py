@@ -30,7 +30,21 @@ class SceneMutator:
         output_dir: str | Path,
     ) -> tuple[SceneRegistry, Path, Path]:
         existing = [item.model_copy(update={"position": current_positions.get(item.object_id, item.position)}) for item in registry.objects]
-        reference = next((item for item in existing if item.object_id == reference_object), None)
+        if reference_object == "__table__":
+            # Generated scenes use a centered 0.75 m x 1.50 m tabletop whose
+            # top surface is z=0.  Keep it as an implicit anchor rather than
+            # adding a fake object to the public scene registry.
+            reference = SceneObject(
+                object_id="__table__",
+                body_name="work_table",
+                role="support",
+                semantic_name="桌面",
+                position=(0.0, 0.0, 0.0),
+                dimensions_m=(0.75, 1.50, 0.0),
+                source="generated",
+            )
+        else:
+            reference = next((item for item in existing if item.object_id == reference_object), None)
         if reference is None:
             raise ValueError(f"scene edit reference not found: {reference_object}")
         asset = self.assets.resolve(category, semantic_name, [semantic_name])
@@ -72,4 +86,3 @@ class SceneMutator:
         interaction = build_generated_registry(scene, updated, out / "interaction_registry.json")
         (out / "scene_registry.json").write_text(updated.model_dump_json(indent=2), encoding="utf-8")
         return updated, scene, interaction
-
