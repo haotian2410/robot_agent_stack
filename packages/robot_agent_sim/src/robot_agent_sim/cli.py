@@ -286,6 +286,8 @@ def chat(
                     typer.echo(f"场景更新成功：{patch['operation']} {patch['object_id']}。Turn {outcome['turn']} / Scene v{outcome['scene_version']} / World v{outcome['world_version']}")
                 elif outcome.get("status") == "query_answer":
                     typer.echo(f"{outcome['answer']} Turn {outcome['turn']} / Scene v{outcome['scene_version']} / World v{outcome['world_version']}")
+                elif outcome.get("status") == "clarification_required":
+                    typer.echo(f"需要澄清：{outcome.get('error', '请补充任务信息。')}", err=True)
                 else:
                     typer.echo(f"任务未执行：{outcome.get('status')}：{outcome.get('error')}", err=True)
             except Exception as exc:

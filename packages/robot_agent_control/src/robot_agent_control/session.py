@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,10 @@ class ControlSession:
         self._viewer = None
         self._viewer_thread = None
         self._viewer_stop = None
+        # MuJoCo does not allow viewer.sync() to copy visual state while the
+        # execution thread is mutating the same mjData.  The passive viewer
+        # and all public state/render operations share this lock.
+        self._mujoco_lock = threading.RLock()
         if self.viewer_mode != ViewerMode.HEADLESS:
             self._open_viewer()
         self.closed = False
@@ -49,11 +54,18 @@ class ControlSession:
         self._viewer = self._viewer_context.__enter__()
         self.executor._configure_camera(self._viewer, self.runtime)
         self.runtime.runtime.attach_viewer(self._viewer)
-        self._viewer.sync()
+        with self._mujoco_lock:
+            self._viewer.sync()
         def sync_loop() -> None:
             while self._viewer is not None and self._viewer.is_running() and not self._viewer_stop.is_set():
-                self._viewer.sync()
-                time.sleep(1.0 / max(self.runtime.playback_fps, 1.0))
+                with self._mujoco_lock:
+                    if self._viewer is None or not self._viewer.is_running():
+                        break
+                    self._viewer.sync()
+                # ``SkillRuntime`` owns the simulation wrapper as
+                # ``runtime``; the playback rate is a property of that
+                # wrapper, not of ``SkillRuntime`` itself.
+                time.sleep(1.0 / max(self.runtime.runtime.playback_fps, 1.0))
 
         self._viewer_thread = threading.Thread(target=sync_loop, name="robot-agent-viewer", daemon=True)
         self._viewer_thread.start()
@@ -94,7 +106,8 @@ class ControlSession:
         )
         try:
             viewer_state = (self._viewer, self._continue_event) if self._viewer is not None else None
-            self.executor._run(document, self.registry, self.runtime, converter, reports, state, viewer_state, self.viewer_mode, trace_path)
+            with self._mujoco_lock:
+                self.executor._run(document, self.registry, self.runtime, converter, reports, state, viewer_state, self.viewer_mode, trace_path)
         except Exception as exc:
             state["failure"] = ExecutionFailure(error_code=ErrorCode.INTERNAL_ERROR, error_message=str(exc), recoverable=False)
         report = ExecutionReport(
@@ -117,35 +130,36 @@ class ControlSession:
 
     def snapshot(self, *, turn_index: int = 0, scene_version: int = 1, world_version: int = 0) -> dict[str, Any]:
         """Return a JSON-safe snapshot directly from the live MuJoCo ``MjData``."""
-        runtime = self.runtime.runtime
-        mujoco.mj_forward(runtime.model, runtime.data)
-        objects: dict[str, Any] = {}
-        for object_id, item in self.registry.objects.items():
-            body_name = item.get("body_name")
-            body_id = mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(body_name)) if body_name else -1
-            if body_id < 0:
-                continue
-            objects[object_id] = {
-                "object_id": object_id,
-                "body_name": body_name,
-                "position": [float(v) for v in runtime.data.xpos[body_id]],
-                "quaternion": [float(v) for v in runtime.data.xquat[body_id]],
-            }
-        joints: dict[str, Any] = {}
-        for joint_id in range(runtime.model.njnt):
-            name = mujoco.mj_id2name(runtime.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
-            if not name:
-                continue
-            qpos_address = int(runtime.model.jnt_qposadr[joint_id])
-            qvel_address = int(runtime.model.jnt_dofadr[joint_id])
-            joints[name] = {"name": name, "position": float(runtime.data.qpos[qpos_address]), "velocity": float(runtime.data.qvel[qvel_address])}
-        held_object = None
-        gripper = getattr(runtime, "gripper_controller", None)
-        held_body = getattr(gripper, "_held_body_id", None)
-        if held_body is not None:
-            held_name = mujoco.mj_id2name(runtime.model, mujoco.mjtObj.mjOBJ_BODY, int(held_body))
-            held_object = next((oid for oid, item in self.registry.objects.items() if item.get("body_name") == held_name), None)
-        return {
+        with self._mujoco_lock:
+            runtime = self.runtime.runtime
+            mujoco.mj_forward(runtime.model, runtime.data)
+            objects: dict[str, Any] = {}
+            for object_id, item in self.registry.objects.items():
+                body_name = item.get("body_name")
+                body_id = mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(body_name)) if body_name else -1
+                if body_id < 0:
+                    continue
+                objects[object_id] = {
+                    "object_id": object_id,
+                    "body_name": body_name,
+                    "position": [float(v) for v in runtime.data.xpos[body_id]],
+                    "quaternion": [float(v) for v in runtime.data.xquat[body_id]],
+                }
+            joints: dict[str, Any] = {}
+            for joint_id in range(runtime.model.njnt):
+                name = mujoco.mj_id2name(runtime.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+                if not name:
+                    continue
+                qpos_address = int(runtime.model.jnt_qposadr[joint_id])
+                qvel_address = int(runtime.model.jnt_dofadr[joint_id])
+                joints[name] = {"name": name, "position": float(runtime.data.qpos[qpos_address]), "velocity": float(runtime.data.qvel[qvel_address])}
+            held_object = None
+            gripper = getattr(runtime, "gripper_controller", None)
+            held_body = getattr(gripper, "_held_body_id", None)
+            if held_body is not None:
+                held_name = mujoco.mj_id2name(runtime.model, mujoco.mjtObj.mjOBJ_BODY, int(held_body))
+                held_object = next((oid for oid, item in self.registry.objects.items() if item.get("body_name") == held_name), None)
+            return {
             "world_version": world_version,
             "scene_version": scene_version,
             "turn_index": turn_index,
@@ -155,9 +169,13 @@ class ControlSession:
             "robot_qpos": [float(v) for v in runtime.get_joint_positions()],
             "robot_qvel": [float(runtime.data.qvel[i]) for i in runtime.dof_indices],
             "held_object": held_object,
-        }
+            }
 
     def observe(self, output_dir: str | Path) -> dict[str, Any]:
+        with self._mujoco_lock:
+            return self._observe_unlocked(output_dir)
+
+    def _observe_unlocked(self, output_dir: str | Path) -> dict[str, Any]:
         """Render RGB/segmentation from the live model/data pair."""
         out = Path(output_dir).expanduser().resolve()
         out.mkdir(parents=True, exist_ok=True)

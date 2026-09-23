@@ -3,7 +3,7 @@ import json
 import pytest
 
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskStatus, TaskType
-from robot_agent_sim.contracts.turn import SceneQueryIntent, SceneQueryType
+from robot_agent_sim.contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType
 from robot_agent_sim.grounding.world_relation import RelationNotSatisfied, WorldRelationResolver
 from robot_agent_sim.session import SceneSession
 from robot_agent_sim.session.contracts import ObjectWorldState, SemanticObject, WorldState
@@ -190,6 +190,54 @@ def test_scene_edit_reloads_runtime_and_continues_with_new_object(tmp_path):
         assert final["report"]["success"] is True
         assert session.world_state.objects["banana_01"].object_id == "banana_01"
         assert (session.output_root / "turns/0002/scene_patch.json").is_file()
+    finally:
+        session.close()
+
+
+def test_scene_edit_without_reference_returns_clarification(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        assert first["report"]["success"] is True
+        turn_dir = session.output_root / "turns" / "0002"
+        turn_dir.mkdir(parents=True)
+        result = session._run_scene_edit(
+            "再导入一个香蕉",
+            SceneEditIntent(
+                operation=SceneEditType.ADD,
+                semantic_name="banana",
+                category="fruit",
+            ),
+            turn_dir,
+        )
+        assert result["status"] == "clarification_required"
+        assert "请说明" in result["error"]
+        assert session.scene_version == 1
+    finally:
+        session.close()
+
+
+def test_scene_edit_with_unknown_reference_returns_clarification(tmp_path):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        assert first["report"]["success"] is True
+        turn_dir = session.output_root / "turns" / "0002"
+        turn_dir.mkdir(parents=True)
+        result = session._run_scene_edit(
+            "在盒子右边增加一个香蕉",
+            SceneEditIntent(
+                operation=SceneEditType.ADD,
+                semantic_name="banana",
+                category="fruit",
+                relation="right_of",
+                reference="box",
+            ),
+            turn_dir,
+        )
+        assert result["status"] == "clarification_required"
+        assert "找不到" in result["error"]
+        assert session.scene_version == 1
     finally:
         session.close()
 

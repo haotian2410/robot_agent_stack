@@ -187,7 +187,39 @@ class SceneSession:
         next_scene_version = self.scene_version + 1
         scene_dir = self.output_root / "scene" / f"v{next_scene_version:04d}"
         if edit.operation == SceneEditType.ADD:
-            reference_id = self._resolve_semantic_object(edit.reference or "")
+            if not edit.reference:
+                message = (
+                    f"要增加{self._zh_label(edit.semantic_name)}，请说明它相对于哪个场景物体以及放置方向；"
+                    "例如：在篮子右边增加一个香蕉。"
+                )
+                self._record_dialogue(instruction)
+                self._write_session()
+                return {
+                    "status": "clarification_required",
+                    "turn": self.turn_index,
+                    "turn_type": "scene_edit",
+                    "error": message,
+                    "scene_version": self.scene_version,
+                    "world_version": self.world_version,
+                }
+            try:
+                reference_id = self._resolve_semantic_object(edit.reference or "")
+            except ValueError:
+                message = (
+                    f"当前场景中找不到唯一的参照物“{edit.reference}”。"
+                    "请先使用场景中已有的物体名称，或重新说明参照物；"
+                    "例如：在盒子右边增加一个香蕉。"
+                )
+                self._record_dialogue(instruction)
+                self._write_session()
+                return {
+                    "status": "clarification_required",
+                    "turn": self.turn_index,
+                    "turn_type": "scene_edit",
+                    "error": message,
+                    "scene_version": self.scene_version,
+                    "world_version": self.world_version,
+                }
             base = self._object_base(edit.semantic_name)
             index = self.next_instance_index.get(base, 1)
             object_id = f"{base}_{index:02d}"
