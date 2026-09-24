@@ -278,6 +278,7 @@ class PipelineEngine:
                 else "unsupported_recipe" if "unsupported_recipe" in message
                 else "grounding_ambiguous" if "grounding_ambiguous" in message
                 else "grounding_candidate_incomplete" if "grounding_candidate_incomplete" in message
+                else "grounding_candidate_count_mismatch" if "grounding_candidate_count_mismatch" in message
                 else "grounding_failed" if "grounding_failed" in message
                 else "relation_not_satisfied" if "relation_not_satisfied" in message
                 else "scene_generation_constraint_failed" if isinstance(exc, SceneConstraintError) else "planning_failed"
@@ -373,6 +374,21 @@ class PipelineEngine:
                 ),
                 visual_grounding,
             )
+        mismatched = [
+            (entity.entity_id, int(entity.count), len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}))
+            for entity in entities
+            if entity.quantity_mode.value == "candidate_pool"
+            and int(entity.count) > 1
+            and len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) > int(entity.count)
+        ]
+        if mismatched:
+            raise GroundingResolutionError(
+                "grounding_candidate_count_mismatch: " + "; ".join(
+                    f"{entity_id} expected exactly {expected}, resolved {resolved}"
+                    for entity_id, expected, resolved in mismatched
+                ),
+                visual_grounding,
+            )
         selected = WorldRelationResolver().resolve(
             intent, candidate_map, positions, bounds=_registry_bounds(registry, positions)
         )
@@ -427,27 +443,39 @@ class PipelineEngine:
             for step in result.skill_plan.get("steps", []):
                 if step.get("operation_id") not in operation_ids:
                     operation_ids.append(step.get("operation_id"))
-            operation_outcomes = [{"operation_id": operation_id, "result": "completed"} for operation_id in operation_ids]
+            operation_outcomes = [{"operation_id": operation_id, "result": "plan_validated"} for operation_id in operation_ids]
         semantic_plan_outcomes = [
             {"operation_id": item["operation_id"], "status": "plan_validated"}
             for item in operation_outcomes
         ]
         goal_conditions = []
+        goal_condition_keys = set()
         if isinstance(result.task_intent, dict):
             for relation in result.task_intent.get("spatial_relations", []):
                 if relation.get("scope") == "goal":
-                    goal_conditions.append(GoalCondition(
+                    condition = GoalCondition(
+                        operation_id=None,
                         relation=relation["relation"],
                         subject=relation["subject"],
                         reference=relation.get("reference"),
-                    ).model_dump(mode="json"))
+                        source="explicit_goal",
+                        verification_mode="geometry",
+                    ).model_dump(mode="json")
+                    goal_conditions.append(condition)
+                    goal_condition_keys.add((condition["relation"], condition["subject"], condition["reference"]))
             for operation in result.task_intent.get("operations", []):
                 task_type = operation.get("task_type")
                 subject = operation.get("source") or operation.get("target")
                 reference = operation.get("destination") or operation.get("reference")
                 inferred = {"pick_and_place": "inside", "grasp": "held", "release": "not_held", "open": "open", "close": "closed"}.get(task_type)
                 if inferred and subject:
-                    goal_conditions.append(GoalCondition(relation=inferred, subject=subject, reference=reference).model_dump(mode="json"))
+                    key = (inferred, subject, reference)
+                    if key in goal_condition_keys:
+                        continue
+                    mode = "geometry" if inferred == "inside" else "articulation" if inferred in {"open", "closed"} else "world_state"
+                    condition = GoalCondition(operation_id=operation.get("operation_id"), relation=inferred, subject=subject, reference=reference, source="operation_inferred", verification_mode=mode).model_dump(mode="json")
+                    goal_conditions.append(condition)
+                    goal_condition_keys.add(key)
         semantic_validation = {
             "task_intent_validation": {"status": "accepted" if result.task_intent else "missing"},
             "grounding_validation": {"status": "accepted" if result.grounded_task else (result.status if "grounding" in result.status else "not_run")},

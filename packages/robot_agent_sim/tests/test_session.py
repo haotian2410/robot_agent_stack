@@ -3,7 +3,7 @@ import json
 import pytest
 
 from robot_agent_sim.contracts.task_intent import Operation, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskStatus, TaskType
-from robot_agent_sim.contracts.turn import SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType
+from robot_agent_sim.contracts.turn import SceneEditIntent, SceneEditRelation, SceneEditType, SceneQueryIntent, SceneQueryType
 from robot_agent_sim.grounding.world_relation import RelationNotSatisfied, WorldRelationResolver
 from robot_agent_sim.session import SceneSession
 from robot_agent_sim.session.contracts import ObjectWorldState, SemanticObject, WorldState
@@ -50,6 +50,13 @@ def test_scene_query_existence_is_structured(tmp_path):
         assert "存在苹果" in answer["answer"]
     finally:
         session.close()
+
+
+def test_scene_edit_relation_and_reference_must_be_supplied_together():
+    with pytest.raises(ValueError, match="supplied together"):
+        SceneEditIntent(operation=SceneEditType.ADD, semantic_name="banana", category="fruit", relation=SceneEditRelation.RIGHT_OF)
+    with pytest.raises(ValueError, match="supplied together"):
+        SceneEditIntent(operation=SceneEditType.ADD, semantic_name="banana", category="fruit", reference="basket")
 
 
 def test_scene_query_position_with_multiple_matches_requires_clarification(tmp_path):
@@ -229,6 +236,28 @@ def test_scene_edit_without_reference_returns_clarification(tmp_path):
         session.close()
 
 
+def test_scene_edit_clarification_runs_through_understanding_and_session(tmp_path, monkeypatch):
+    session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
+    try:
+        first = session.run_turn("把两个苹果中靠近篮子的苹果放进篮子")
+        assert first["report"]["success"] is True
+        scene_version = session.scene_version
+        world_version = session.world_version
+        monkeypatch.setattr(session.control, "reload_scene", lambda *_args, **_kwargs: pytest.fail("clarification must not reload the scene"))
+
+        missing = session.run_turn("增加一个香蕉")
+        assert missing["status"] == "clarification_required"
+        assert session.scene_version == scene_version
+        assert session.world_version == world_version
+
+        vague = session.run_turn("在篮子旁边增加一个香蕉")
+        assert vague["status"] == "clarification_required"
+        assert session.scene_version == scene_version
+        assert session.world_version == world_version
+    finally:
+        session.close()
+
+
 def test_scene_edit_without_relation_returns_clarification(tmp_path):
     session = SceneSession(robot="ur5e", output_root=tmp_path, viewer_mode="headless")
     try:
@@ -238,7 +267,7 @@ def test_scene_edit_without_relation_returns_clarification(tmp_path):
         turn_dir.mkdir(parents=True)
         result = session._run_scene_edit(
             "在篮子旁边增加一个香蕉",
-            SceneEditIntent(operation=SceneEditType.ADD, semantic_name="banana", category="fruit", reference="basket"),
+            SceneEditIntent(operation=SceneEditType.ADD, semantic_name="banana", category="fruit"),
             turn_dir,
         )
         assert result["status"] == "clarification_required"

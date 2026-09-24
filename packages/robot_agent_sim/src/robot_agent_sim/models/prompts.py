@@ -6,7 +6,7 @@ import json
 TASK_UNDERSTANDING_PROMPT = """解析一次用户输入，只输出规定 JSON。每次只能选择一个 turn_kind：
 - robot_task：需要机器人执行的任务；
 - scene_edit：增加或删除场景实体，填写 scene_edit，entities/operations/relations 留空；
-- scene_edit 的 add 必须同时填写 relation 和 reference；如果用户没有说明相对哪个物体及方向，返回 clarification_required，不要猜测 right_of；“桌子/桌面”是可用的隐式支撑面参照物；
+- scene_edit 的 add 不得猜测用户未说明的 relation/reference；如果用户只说“增加一个香蕉”，仍返回 accepted scene_edit，并将 relation/reference 都保持为 null，是否需要澄清由后续 deterministic session logic 决定；relation/reference 要么同时填写、要么同时为 null；“桌子/桌面”是可用的隐式支撑面参照物；
 - scene_query：询问当前场景数量、位置或状态，scene_edit 为 null，entities/operations/relations 留空；
 - session_control：会话控制，scene_edit 为 null，entities/operations/relations 留空。
 这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。session_control 时填写 session_control.action（pause/resume/close），其余任务字段留空。
@@ -15,7 +15,7 @@ open/close 的 target 是门或抽屉，reference 是对应把手；不要把 op
 必须区分 motion direction 与 entity spatial selector。
 motion direction 仅允许 left/right/front/back/up/down；东=right、西=left、南=back、北=front，并写入 raw_direction。
 机械臂“向左上方移动”等复合 motion direction 返回 direction_clarification_required。
-实体描述中的“左边/左上角/最右边/右下角”不是 motion direction，不得触发 direction_clarification_required，必须写入 scope=selection 的 relations。数量词写入对应 entity 的 count（未说明时 count=1）。 “N个物体中……”或“靠近/最远的N个物体”使用 quantity_mode=candidate_pool；“全部/都/每个”使用 quantity_mode=all；单个物体使用 quantity_mode=single。当前执行器不支持 quantity_mode=all 且 count>1，必须返回 unsupported_task 或 clarification_required，不得只规划一个对象。
+实体描述中的“左边/左上角/最右边/右下角”不是 motion direction，不得触发 direction_clarification_required，必须写入 scope=selection 的 relations。数量词写入对应 entity 的 count（未说明时 count=1）。 “N个物体中……”或“靠近/最远的N个物体”使用 quantity_mode=candidate_pool；“全部/都/每个”使用 quantity_mode=all；单个物体使用 quantity_mode=single。当前执行器不支持 quantity_mode=all 且 count>1，必须返回 unsupported_task，不得只规划一个对象。
 侧向筛选与极值排名必须区分：“右边的苹果”使用 right（x>0），“最右边的苹果”使用 rightmost（argmax x）；同理区分 left/leftmost、front/frontmost、back/backmost、up/highest、down/lowest。
 二维场景角落使用现有 relation 组合表达：左上角=left+front、右上角=right+front、左下角=left+back、右下角=right+back；这里的上/下是平面前/后，不是 Z 轴 above/below。每条 relation 的 subject 必须是被修饰实体。
 一句话可以同时包含实体 selector 和 motion direction，例如“把左边的棒球向右移动”应给棒球 selection relation=left，并给 operation 的 raw_direction=right。
@@ -29,6 +29,8 @@ motion direction 仅允许 left/right/front/back/up/down；东=right、西=left�
 {"status":"accepted","turn_kind":"robot_task","scene_edit":null,"entities":[{"id":"red_block","name":"红色方块","category":"object","color":"red"},{"id":"blue_box","name":"蓝色盒子","category":"container","color":"blue"}],"operations":[{"type":"pick_and_place","source":"red_block","destination":"blue_box"}],"relations":[],"raw_direction":null,"raw_task":null}
 例如“在篮子右边增加一个香蕉”应返回：
 {"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":"right_of","reference":"basket"},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
+例如“增加一个香蕉”应返回：
+{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":null,"reference":null},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
 例如“现在有几个苹果”应返回：
 {"status":"accepted","turn_kind":"scene_query","scene_query":{"query_type":"count","semantic_name":"apple","category":"fruit","referent":false},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
 例如“它在哪里”在已有对话指代下应返回：

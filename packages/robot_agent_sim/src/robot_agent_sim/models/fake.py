@@ -45,6 +45,14 @@ class FakeTaskUnderstandingProvider:
             if matched is None:
                 return TaskParseLLMOutput(status="unsupported_task", turn_kind=TurnKind.SCENE_EDIT, raw_task=text)
             semantic_name, category = matched
+            relation = (
+                SceneEditRelation.LEFT_OF if "左" in text
+                else SceneEditRelation.RIGHT_OF if "右" in text
+                else SceneEditRelation.FRONT_OF if "前" in text
+                else SceneEditRelation.BEHIND if "后" in text
+                else None
+            )
+            reference = "basket" if relation is not None and "篮" in text else "table" if relation is not None and any(token in text for token in ("桌子", "桌面", "台面")) else None
             return TaskParseLLMOutput(
                 status="accepted",
                 turn_kind=TurnKind.SCENE_EDIT,
@@ -52,8 +60,8 @@ class FakeTaskUnderstandingProvider:
                     operation=edit_operation,
                     semantic_name=semantic_name,
                     category=category,
-                    relation=SceneEditRelation.LEFT_OF if "左" in text else SceneEditRelation.RIGHT_OF,
-                    reference="basket" if "篮" in text else None,
+                    relation=relation,
+                    reference=reference,
                 ),
             )
         existence_query = any(token in text for token in ("有没有", "是否有", "还在吗")) or ("有" in text and "吗" in text)

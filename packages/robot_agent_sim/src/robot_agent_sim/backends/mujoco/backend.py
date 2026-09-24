@@ -81,7 +81,10 @@ class MujocoSceneBackend:
         ET.SubElement(world, "geom", name="ground", type="plane", size="3 3 0.1", pos="0 0 -0.6", rgba="0.82 0.84 0.88 1")
         # The tabletop upper surface is z=0 in the public tabletop-centered
         # frame; task-object body positions are the contact locations.
-        table = ET.SubElement(world, "body", name="work_table", pos="0 0 -0.6"); ET.SubElement(table, "geom", name="work_table_top", type="box", pos="0 0 0.585", size="0.375 0.75 0.015", rgba="0.48 0.28 0.12 1")
+        from ...scene.support_surfaces import WORK_TABLE
+        table = ET.SubElement(world, "body", name=WORK_TABLE.body_name, pos=" ".join(str(v) for v in WORK_TABLE.position))
+        half_x, half_y, half_z = (value / 2 for value in WORK_TABLE.dimensions_m)
+        ET.SubElement(table, "geom", name="work_table_top", type="box", pos=f"0 0 {half_z - WORK_TABLE.thickness_m}", size=f"{half_x} {half_y} {WORK_TABLE.thickness_m / 2}", rgba="0.48 0.28 0.12 1")
         ET.SubElement(world, "camera", name="scene_camera", pos="0 0 1.5", quat="1 0 0 0", fovy="45")
     @staticmethod
     def _add_asset(asset, record):

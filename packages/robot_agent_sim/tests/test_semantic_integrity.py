@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -113,21 +115,47 @@ def test_all_quantity_is_rejected_instead_of_silently_executing_one():
     assert intent.operations == []
 
 
-def test_multiple_directional_moves_require_clarification():
+@pytest.mark.parametrize(
+    ("instruction", "operations"),
+    [
+        (
+            "苹果左移5厘米，然后香蕉左移10厘米",
+            [ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.05), ParseOperation(type="move", target="banana", motion_direction="left", distance_m=0.10)],
+        ),
+        (
+            "苹果左移5厘米，然后香蕉右移10厘米",
+            [ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.05), ParseOperation(type="move", target="banana", motion_direction="right", distance_m=0.10)],
+        ),
+        (
+            "苹果左移5厘米，然后香蕉左移10厘米",
+            [ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.05)],
+        ),
+    ],
+)
+def test_multiple_directional_moves_require_clarification(instruction, operations):
     parsed = TaskParseLLMOutput(
         status="accepted",
         entities=[
             ParseEntity(id="apple", name="apple", category="fruit"),
             ParseEntity(id="banana", name="banana", category="fruit"),
         ],
-        operations=[
-            ParseOperation(type="move", target="apple", motion_direction="left", distance_m=0.05),
-            ParseOperation(type="move", target="banana", motion_direction="right", distance_m=0.10),
-        ],
+        operations=operations,
     )
-    intent = enrich_task(parsed, "苹果左移5厘米，然后香蕉右移10厘米")
+    intent = enrich_task(parsed, instruction)
     assert intent.status == TaskStatus.CLARIFICATION_REQUIRED
     assert intent.operations == []
+
+
+def test_single_directional_move_keeps_deterministic_text_repair():
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[ParseEntity(id="apple", name="apple", category="fruit")],
+        operations=[ParseOperation(type="move", target="apple", motion_direction="right", distance_m=0.5)],
+    )
+    intent = enrich_task(parsed, "苹果左移5厘米")
+    assert intent.status == TaskStatus.ACCEPTED
+    assert intent.operations[0].motion_direction.value == "left"
+    assert intent.operations[0].distance_m == pytest.approx(0.05)
 
 
 def test_candidate_pool_quantity_remains_supported():
@@ -135,6 +163,23 @@ def test_candidate_pool_quantity_remains_supported():
     parsed = FakeTaskUnderstandingProvider().understand(request)
     assert parsed.entities[0].quantity_mode == QuantityMode.CANDIDATE_POOL
     assert enrich_task(parsed, request.instruction).status == TaskStatus.ACCEPTED
+
+
+def test_goal_conditions_are_structured_and_execution_remains_unverified(tmp_path):
+    result = PipelineEngine().plan("把苹果放进篮子", output_dir=tmp_path)
+    assert result.status == "accepted"
+    goals = json.loads((tmp_path / "goal_conditions.json").read_text())
+    assert goals == [{
+        "operation_id": None,
+        "relation": "inside",
+        "subject": "apple_01",
+        "reference": "basket_01",
+        "source": "explicit_goal",
+        "verification_mode": "geometry",
+    }]
+    validation = json.loads((tmp_path / "semantic_validation.json").read_text())
+    assert validation["skill_plan_validation"]["execution_goal_status"] == "not_verified"
+    assert validation["skill_plan_validation"]["operation_outcomes"] == [{"operation_id": "op-1", "result": "plan_validated"}]
 
 
 def test_candidate_pool_without_relation_still_generates_minimum_pool(tmp_path):
@@ -164,10 +209,19 @@ def test_route_a_candidate_pool_generates_count_and_leftmost_binding(tmp_path):
     assert selected["position"][0] == min(item["position"][0] for item in candidates)
 
 
+@pytest.mark.parametrize("instruction", ["把三个苹果中最高的苹果抓起来", "把三个苹果中最低的苹果抓起来"])
+def test_route_a_vertical_ranking_requires_supported_height_levels(tmp_path, instruction):
+    result = PipelineEngine().plan(instruction, output_dir=tmp_path)
+    assert result.status == "scene_generation_constraint_failed"
+    assert "supported height levels" in (result.error or "")
+
+
 @pytest.mark.parametrize(
     ("instruction", "selector"),
     [
         ("把三个苹果中最右边的苹果抓起来", lambda item, reference: item["position"][0]),
+        ("把三个苹果中最前面的苹果抓起来", lambda item, reference: item["position"][1]),
+        ("把三个苹果中最后面的苹果抓起来", lambda item, reference: item["position"][1]),
         ("把三个苹果中靠近篮子的苹果抓起来", lambda item, reference: (
             (item["position"][0] - reference["position"][0]) ** 2
             + (item["position"][1] - reference["position"][1]) ** 2
@@ -182,8 +236,10 @@ def test_route_a_candidate_pool_preserves_count_for_other_rankings(tmp_path, ins
     selected = next(item for item in candidates if item["object_id"] == result.scene_registry["bindings"]["apple_01"])
     basket = next((item for item in result.scene_registry["objects"] if item["semantic_name"] == "basket"), None)
     scores = [selector(item, basket) for item in candidates]
-    if "最右边" in instruction:
+    if "最右边" in instruction or "最前面" in instruction:
         assert selector(selected, basket) == max(scores)
+    elif "最后面" in instruction:
+        assert selector(selected, basket) == min(scores)
     else:
         assert selector(selected, basket) == min(scores)
 

@@ -36,6 +36,12 @@ class SceneEditIntent(BaseModel):
     relation: SceneEditRelation | None = None
     reference: str | None = None
 
+    @model_validator(mode="after")
+    def validate_edit_relation(self):
+        if self.operation == SceneEditType.ADD and ((self.relation is None) != (self.reference is None)):
+            raise ValueError("scene_edit add relation/reference must be supplied together")
+        return self
+
 
 class SceneQueryType(StrEnum):
     COUNT = "count"

@@ -3,6 +3,14 @@ set -euo pipefail
 
 # Manual GUI smoke test; intentionally not part of CI.  Run from a local
 # desktop session and close the chat with /exit after checking each turn.
+cat <<'EOF'
+Manual checks:
+  1. Execute a robot task and confirm the viewer remains responsive.
+  2. Execute a second turn in the same viewer.
+  3. Add or remove a scene object and confirm the viewer reloads.
+  4. Execute another robot task.
+  5. Test STEP mode separately and close with /exit.
+EOF
 exec robot-agent chat \
   --robot ur5e \
   --provider "${ROBOT_AGENT_PROVIDER:-qwen}" \
@@ -11,4 +19,4 @@ exec robot-agent chat \
   --qwen-model "${QWEN_MODEL:-Qwen3.8-27B}" \
   --structured-output json_schema \
   --output-dir "${ROBOT_AGENT_OUTPUT_DIR:-var/viewer-smoke}" \
-  --viewer-mode auto
+  --viewer-mode "${VIEWER_MODE:-auto}"

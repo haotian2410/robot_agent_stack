@@ -5,10 +5,10 @@ import random
 import re
 
 from ..contracts.task_intent import Direction, QuantityMode, SpatialRelationType
+from .constraints import SceneConstraintError
 from .registry import SceneObject, SceneRegistry
+from .support_surfaces import WORKSPACE_X, WORKSPACE_Y
 
-WORKSPACE_X = (-0.31, 0.31)
-WORKSPACE_Y = (-0.66, 0.66)
 MIN_GAP_M = 0.04
 
 
@@ -107,21 +107,19 @@ class SceneComposer:
                 and r.relation in ranking_relations
             ), None)
             reference = next((item for item in objects if relation and relation.reference and item.object_id == bindings[relation.reference]), None)
+            if relation and relation.relation in {SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST}:
+                raise SceneConstraintError(
+                    f"scene_generation_constraint_failed: vertical ranking requires supported height levels for {entity.entity_id}"
+                )
             # Generate the requested number of candidates.  Selection tasks
             # need at least two candidates even when the language omits an
             # explicit count; an explicit count such as “三个苹果” is kept.
             candidate_count = max(int(entity.count), 2)
             candidates = []
+            ranking_positions = self._candidate_ranking_positions(relation, candidate_count, reference, assets[entity.entity_id].dimensions_m or _primitive_dimensions(assets[entity.entity_id].model_name))
             for index in range(candidate_count):
-                if relation and relation.relation in {SpatialRelationType.HIGHEST, SpatialRelationType.LOWEST}:
-                    # A tabletop-only layout would give every candidate the
-                    # same z score.  Stack candidates with a deterministic
-                    # clearance so highest/lowest has a unique optimum.
-                    preferred = (
-                        reference.position[0] if reference else 0.0,
-                        (reference.position[1] if reference else 0.0) + 0.12 * index,
-                        0.10 * index,
-                    )
+                if ranking_positions is not None:
+                    preferred = ranking_positions[index]
                 elif index == 0:
                     preferred = ((reference.position[0] + 0.12) if reference else 0.12, reference.position[1] if reference else 0.0)
                 else:
@@ -140,6 +138,23 @@ class SceneComposer:
             bindings[entity.entity_id] = ranked[0].object_id
 
         return SceneRegistry(scene_id=f"{robot}_generated_{seed}", robot=robot, objects=objects, bindings=bindings)
+
+    @staticmethod
+    def _candidate_ranking_positions(relation, count, reference, dimensions):
+        if relation is None or relation.relation not in {
+            SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
+            SpatialRelationType.FRONTMOST, SpatialRelationType.BACKMOST,
+        }:
+            return None
+        width, depth, _ = dimensions
+        spacing = max(width if relation.relation in {SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST} else depth, MIN_GAP_M + 0.02, 0.12)
+        if relation.relation in {SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST}:
+            center = reference.position[0] if reference else 0.0
+            start = center - spacing * (count - 1) / 2
+            return [(round(start + spacing * index, 6), round(reference.position[1] if reference else 0.0, 6), 0.0) for index in range(count)]
+        center = reference.position[1] if reference else 0.0
+        start = center - spacing * (count - 1) / 2
+        return [(round(reference.position[0] if reference else 0.0, 6), round(start + spacing * index, 6), 0.0) for index in range(count)]
 
     @staticmethod
     def _rank_candidates(candidates, reference, relation):

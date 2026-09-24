@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contracts.task_intent import Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
+from ..contracts.task_intent import Direction, Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
 from ..contracts.turn import SceneEditIntent, SceneQueryIntent, SessionControlIntent, TurnKind
 from .motion_policy import MotionPolicy
 
@@ -107,6 +108,51 @@ _EXPLICIT_MOTION_DIRECTIONS = (
     (r"(?:向|往|朝)\s*下\s*(?:移(?:动)?|挪)|下移", "down"),
 )
 
+_DISTANCE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(厘米|cm|米|m)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ExplicitMotionSpan:
+    direction: Direction
+    distance_m: float | None
+    vague: bool
+    start: int
+    end: int
+
+
+def _extract_explicit_motion_spans(instruction: str) -> list[ExplicitMotionSpan]:
+    """Return every explicit directional motion phrase in text order."""
+    matches: list[tuple[int, int, Direction]] = []
+    for pattern, direction in _EXPLICIT_MOTION_DIRECTIONS:
+        for match in re.finditer(pattern, instruction):
+            matches.append((match.start(), match.end(), Direction(direction)))
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    unique: list[tuple[int, int, Direction]] = []
+    for item in matches:
+        if any(item[0] < end and item[1] > start for start, end, _ in unique):
+            continue
+        unique.append(item)
+    unique.sort(key=lambda item: item[0])
+
+    spans = []
+    for index, (start, end, direction) in enumerate(unique):
+        next_start = unique[index + 1][0] if index + 1 < len(unique) else len(instruction)
+        window_end = min(next_start, end + 20)
+        distance_match = _DISTANCE_PATTERN.search(instruction, end, window_end)
+        distance_m = None
+        if distance_match is not None:
+            distance_m = float(distance_match.group(1))
+            if distance_match.group(2).casefold() in {"厘米", "cm"}:
+                distance_m /= 100.0
+        spans.append(ExplicitMotionSpan(
+            direction=direction,
+            distance_m=distance_m,
+            vague=distance_m is None,
+            start=start,
+            end=distance_match.end() if distance_match is not None else end,
+        ))
+    return spans
+
 
 def _instruction_motion(instruction: str) -> tuple[str | None, float | None, bool]:
     """Recover an explicit directional displacement from the user's text.
@@ -119,26 +165,24 @@ def _instruction_motion(instruction: str) -> tuple[str | None, float | None, boo
     as “右边的苹果”.
     """
 
-    direction = next(
-        (value for pattern, value in _EXPLICIT_MOTION_DIRECTIONS if re.search(pattern, instruction)),
-        None,
-    )
-    if direction is None:
+    spans = _extract_explicit_motion_spans(instruction)
+    if len(spans) != 1:
         return None, None, False
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(厘米|cm|米|m)", instruction, re.IGNORECASE)
-    if match is None:
-        return direction, None, True
-    distance = float(match.group(1))
-    if match.group(2).casefold() in {"厘米", "cm"}:
-        distance /= 100.0
-    return direction, distance, False
+    span = spans[0]
+    return span.direction.value, span.distance_m, span.vague
 
 
 def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: MotionPolicy | None = None) -> TaskIntent:
     policy = motion_policy or MotionPolicy()
+    motion_spans = _extract_explicit_motion_spans(instruction)
+    if len(motion_spans) > 1:
+        return TaskIntent(
+            status=TaskStatus.CLARIFICATION_REQUIRED,
+            instruction=instruction,
+            explanation="当前一次任务只支持一个明确的方向移动，请拆成多个连续指令。",
+        )
     text_direction, text_distance, text_is_vague = _instruction_motion(instruction)
     has_model_move = any(operation.type == "move" for operation in parsed.operations)
-    explicit_move_count = sum(1 for pattern, _ in _EXPLICIT_MOTION_DIRECTIONS if re.search(pattern, instruction))
     parsed_move_count = sum(1 for operation in parsed.operations if operation.type == "move")
     repairs: list[dict[str, object]] = []
     operations = []
@@ -157,7 +201,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
         model_distance = op.distance_m or (parsed.distance_m if operation_type == "move" and parsed_move_count == 1 else None)
         direction = model_direction
         distance_m = model_distance
-        if operation_type == "move" and text_direction is not None and explicit_move_count == 1:
+        if operation_type == "move" and text_direction is not None and len(motion_spans) == 1:
             if model_direction != text_direction and model_direction is not None:
                 repairs.append({"field": f"op-{index + 1}.motion_direction", "model_value": model_direction, "text_value": text_direction, "chosen": text_direction, "reason": "explicit_user_constraint"})
             direction = text_direction
@@ -194,12 +238,6 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             status=TaskStatus.UNSUPPORTED_MULTI_OBJECT_EXECUTION,
             instruction=instruction,
             explanation="当前执行器暂不支持一次性对多个同类物体重复执行任务，请一次指定一个物体或使用候选筛选条件。",
-        )
-    if len([operation for operation in operations if operation.task_type == TaskType.MOVE and operation.motion_direction is not None]) > 1 and explicit_move_count > 1:
-        return TaskIntent(
-            status=TaskStatus.CLARIFICATION_REQUIRED,
-            instruction=instruction,
-            explanation="当前一次任务只支持一个明确的方向移动，请拆成多个连续指令。",
         )
     return TaskIntent(
         status=parsed.status, instruction=instruction, task_types=task_types,

@@ -59,9 +59,11 @@ def test_route_b_auto_discovers_task_body_and_grounding_artifact(tmp_path):
     assert validation["task_intent_validation"]["status"] == "accepted"
     assert validation["grounding_validation"]["status"] == "accepted"
     assert validation["skill_plan_validation"]["status"] == "accepted"
-    assert validation["skill_plan_validation"]["operation_outcomes"] == [{"operation_id": "op-1", "result": "completed"}]
+    assert validation["skill_plan_validation"]["operation_outcomes"] == [{"operation_id": "op-1", "result": "plan_validated"}]
     assert validation["skill_plan_validation"]["semantic_plan_outcomes"] == [{"operation_id": "op-1", "status": "plan_validated"}]
     assert validation["skill_plan_validation"]["execution_goal_status"] == "not_verified"
+    goals = json.loads(Path(result.artifacts["goal_conditions.json"]).read_text())
+    assert goals == []
 
 
 def test_route_b_sidecar_takes_precedence(tmp_path):
@@ -228,6 +230,25 @@ def test_candidate_pool_cache_is_completed_by_vision_before_ranking(tmp_path):
     assert len(vision.requests) == 1
     assert vision.requests[0].entities[0].all is True
     assert grounded[0].object_id == "apple_03"
+
+    too_many = {
+        "apple": [
+            {"object_id": "apple_01", "sources": ["semantic_map"]},
+            {"object_id": "apple_02", "sources": ["vision"]},
+            {"object_id": "apple_03", "sources": ["vision"]},
+            {"object_id": "apple_04", "sources": ["vision"]},
+        ]
+    }
+    with pytest.raises(ValueError, match="grounding_candidate_count_mismatch"):
+        engine._resolve_candidate_map(
+            intent,
+            intent.entities,
+            too_many,
+            SceneRegistry(scene_id="three", robot="ur5e", objects=[]),
+            observation,
+            {"apple_01": (-0.2, 0, 0), "apple_02": (0.0, 0, 0), "apple_03": (0.2, 0, 0), "apple_04": (0.3, 0, 0)},
+            ModelCallBudget.for_mode(ModelCallMode.CURRENT_SCENE, "recipe"),
+        )
 
 
 def _two_object_route_b(monkeypatch, tmp_path, vision):

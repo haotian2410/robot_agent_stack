@@ -9,6 +9,7 @@ from ..backends.mujoco.backend import MujocoSceneBackend
 from ..execution.interaction_registry_builder import build_generated_registry
 from .placement import PlacementSolver
 from .registry import SceneObject, SceneRegistry
+from .support_surfaces import WORK_TABLE
 
 
 class SceneMutator:
@@ -39,8 +40,8 @@ class SceneMutator:
                 body_name="work_table",
                 role="support",
                 semantic_name="桌面",
-                position=(0.0, 0.0, 0.0),
-                dimensions_m=(0.75, 1.50, 0.0),
+                position=(WORK_TABLE.position[0], WORK_TABLE.position[1], 0.0),
+                dimensions_m=(WORK_TABLE.dimensions_m[0], WORK_TABLE.dimensions_m[1], 0.0),
                 source="generated",
             )
         else:
