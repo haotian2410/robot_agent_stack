@@ -10,6 +10,7 @@ from typing import Any
 
 from ..execution.compiler import compile_directory
 from ..execution.compiler import compile_execution_bundle
+from ..execution.placement_allocator import allocate_interior_slots
 from .batch_executor import slice_skill_plan_for_operation
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
@@ -199,37 +200,60 @@ class SceneSession:
         subtasks = []
         combined_steps = []
         for index, operation_id in enumerate(operation_ids, 1):
-            operation = operation_map.get(operation_id)
-            if operation is None:
-                parent = operation_id.split("__", 1)[0]
-                operation = next((value for value in grounded.operations if value.operation_id == parent), None)
-            if operation is None:
-                raise ValueError(f"execution_operation_missing: {operation_id}")
-            sub_skill = slice_skill_plan_for_operation(skill, operation_id)
-            if not sub_skill.steps:
-                continue
-            sub_task = grounded.model_copy(update={"operations": [operation]})
-            sub_dir = turn_dir / "subtasks" / f"{index:04d}"
-            bundle = compile_execution_bundle(
-                sub_skill, sub_task,
-                scene_path=self.scene_path,
-                interaction_registry_path=self.interaction_registry,
-                output_dir=sub_dir,
-                route=result.route,
-                robot=self.robot,
-            )
-            bundle_path = Path(bundle.task_dir) / "execution_bundle.json"
-            if self.control is None:
-                self.control = SessionExecutorClient(viewer_mode=self.viewer_mode)
-                self.control.open(bundle_path)
-            response = self.control.execute(bundle_path)
-            report = response.get("report", {})
-            success = bool(report.get("success", response.get("success", True)))
-            subtasks.append({"operation_id": operation_id, "status": "succeeded" if success else "failed", "report": report, "bundle": str(bundle_path)})
-            combined_steps.extend(report.get("steps", []))
-            self.world_version += 1
-            self.world_state = WorldState.model_validate({**response["snapshot"], "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
-            if not success:
+            placement = None
+            bundle_path = None
+            try:
+                operation = operation_map.get(operation_id)
+                if operation is None:
+                    parent = operation_id.split("__", 1)[0]
+                    operation = next((value for value in grounded.operations if value.operation_id == parent), None)
+                if operation is None:
+                    raise ValueError(f"execution_operation_missing: {operation_id}")
+                sub_skill = slice_skill_plan_for_operation(skill, operation_id)
+                if not sub_skill.steps:
+                    subtasks.append({"operation_id": operation_id, "status": "skipped", "reason": "empty_skill_plan"})
+                    continue
+                sub_task = grounded.model_copy(update={"operations": [operation]})
+                sub_dir = turn_dir / "subtasks" / f"{index:04d}"
+                registry_path, placement = self._prepare_live_placement(operation, grounded, sub_skill, sub_dir)
+                bundle = compile_execution_bundle(
+                    sub_skill, sub_task,
+                    scene_path=self.scene_path,
+                    interaction_registry_path=registry_path,
+                    output_dir=sub_dir,
+                    route=result.route,
+                    robot=self.robot,
+                )
+                bundle_path = Path(bundle.task_dir) / "execution_bundle.json"
+                if self.control is None:
+                    self.control = SessionExecutorClient(viewer_mode=self.viewer_mode)
+                    self.control.open(bundle_path)
+                response = self.control.execute(bundle_path)
+                report = response.get("report", {})
+                success = bool(report.get("success", response.get("success", True)))
+                subtasks.append({"operation_id": operation_id, "status": "succeeded" if success else "failed", "report": report, "bundle": str(bundle_path), "placement": placement})
+                combined_steps.extend(report.get("steps", []))
+                self.world_version += 1
+                self.world_state = WorldState.model_validate({**response["snapshot"], "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
+                if not success:
+                    break
+            except Exception as exc:
+                # A failed compile, placement allocation, or RPC must not
+                # escape the batch: the live controller may already have
+                # advanced while the session files have not. Refresh first,
+                # then persist a partial report and mark later operations.
+                snapshot = None
+                if self.control is not None:
+                    try:
+                        snapshot = self.control.snapshot().get("snapshot")
+                    except Exception:
+                        snapshot = None
+                if snapshot is not None:
+                    self.world_version += 1
+                    self.world_state = WorldState.model_validate({**snapshot, "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
+                subtasks.append({"operation_id": operation_id, "status": "failed", "error": str(exc), "bundle": str(bundle_path) if bundle_path else None, "placement": placement})
+                for remaining in operation_ids[index:]:
+                    subtasks.append({"operation_id": remaining, "status": "skipped", "reason": "previous_subtask_failed"})
                 break
         completed = sum(item["status"] == "succeeded" for item in subtasks)
         failed = sum(item["status"] == "failed" for item in subtasks)
@@ -243,22 +267,128 @@ class SceneSession:
             "completed": completed,
             "failed": failed,
             "skipped": max(0, len(operation_ids) - completed - failed),
-            "commands_total": sum(item["report"].get("commands_total", 0) for item in subtasks),
-            "commands_completed": sum(item["report"].get("commands_completed", 0) for item in subtasks),
+            "commands_total": sum(item.get("report", {}).get("commands_total", 0) for item in subtasks),
+            "commands_completed": sum(item.get("report", {}).get("commands_completed", 0) for item in subtasks),
             "steps": combined_steps,
             "subtasks": subtasks,
         }
         (turn_dir / "batch_execution_report.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
-        last = subtasks[-1]["report"] if subtasks else {}
+        last = subtasks[-1].get("report", {}) if subtasks else {}
         combined = dict(last)
         combined["success"] = batch["status"] == "success"
-        combined["commands_total"] = sum(item["report"].get("commands_total", 0) for item in subtasks)
-        combined["commands_completed"] = sum(item["report"].get("commands_completed", 0) for item in subtasks)
+        combined["commands_total"] = sum(item.get("report", {}).get("commands_total", 0) for item in subtasks)
+        combined["commands_completed"] = sum(item.get("report", {}).get("commands_completed", 0) for item in subtasks)
         combined["steps"] = combined_steps
         # Preserve the per-turn artifact consumed by existing tooling while
         # also keeping the new batch report alongside it.
         (turn_dir / "execution_report.json").write_text(json.dumps(combined, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"snapshot": self.world_state.model_dump(mode="json"), "report": combined}, batch
+
+    def _prepare_live_placement(self, operation, grounded: GroundedTask, skill: SkillPlan, sub_dir: Path) -> tuple[Path, dict[str, Any] | None]:
+        """Allocate a container slot from the current live world state.
+
+        The interaction sidecar remains authored/static metadata.  A per-
+        subtask copy receives only the current ``interior`` anchor override,
+        so the next operation recomputes against the post-execution snapshot.
+        """
+        if self.interaction_registry is None or self.world_state is None or self.scene_registry is None:
+            return self.interaction_registry, None
+        interior_steps = [step for step in skill.steps if step.semantic_target == "container_interior"]
+        if not interior_steps or not operation.destination:
+            return self.interaction_registry, None
+        destination_entity = next((item for item in grounded.entities if item.entity_id == operation.destination), None)
+        source_entity = next((item for item in grounded.entities if item.entity_id == (operation.source or operation.target)), None)
+        if destination_entity is None or source_entity is None:
+            return self.interaction_registry, None
+        destination_id = destination_entity.object_id
+        source_id = source_entity.object_id
+        data = json.loads(Path(self.interaction_registry).read_text(encoding="utf-8"))
+        target = data.get("objects", {}).get(destination_id)
+        if not isinstance(target, dict):
+            return self.interaction_registry, None
+        spatial = target.get("spatial", {})
+        region = spatial.get("regions", {}).get("interior")
+        anchors = spatial.get("anchors", {})
+        interior_anchor = anchors.get("interior")
+        if not isinstance(region, dict) or not isinstance(interior_anchor, dict):
+            # A legacy/authored registry can still execute one placement at
+            # its authored center, but must not silently overlap later items.
+            existing_contents = self._objects_inside_container(destination_id, None)
+            if existing_contents:
+                raise ValueError("placement_region_metadata_required: container interior bounds are missing")
+            return self.interaction_registry, None
+        container_item = next((item for item in SceneRegistry.model_validate(self.scene_registry).objects if item.object_id == destination_id), None)
+        source_item = next((item for item in SceneRegistry.model_validate(self.scene_registry).objects if item.object_id == source_id), None)
+        if container_item is None or source_item is None:
+            return self.interaction_registry, None
+        container_position = self.world_state.objects.get(destination_id)
+        if container_position is None:
+            return self.interaction_registry, None
+        source_dimensions = source_item.dimensions_m or (0.06, 0.06, 0.06)
+        local_min = tuple(float(value) for value in region.get("local_min", ()))
+        local_max = tuple(float(value) for value in region.get("local_max", ()))
+        if len(local_min) != 3 or len(local_max) != 3:
+            raise ValueError("placement_region_metadata_required: invalid container interior bounds")
+        # Keep allocation inside the authored footprint even when an imported
+        # mesh reports a decorative overhang wider than the usable interior.
+        source_dimensions = (
+            min(float(source_dimensions[0]), max(local_max[0] - local_min[0] - 1e-4, 1e-4)),
+            min(float(source_dimensions[1]), max(local_max[1] - local_min[1] - 1e-4, 1e-4)),
+            float(source_dimensions[2]),
+        )
+        occupied = self._objects_inside_container(destination_id, (local_min, local_max), exclude={source_id})
+        slots = allocate_interior_slots(local_min, local_max, source_dimensions, occupied=occupied)
+        if not slots:
+            raise ValueError(f"placement_capacity_exceeded: {destination_id}")
+        slot = slots[0]
+        old_position = interior_anchor.get("local_position", [0.0, 0.0, 0.05])
+        local_position = [slot.local_position[0], slot.local_position[1], max(slot.local_position[2], float(old_position[2]))]
+        interior_anchor["local_position"] = local_position
+        data.setdefault("metadata", {})["placement_allocator"] = "live_world_floor_grid"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        override_path = sub_dir / "interaction_registry_input.json"
+        override_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        placement = {
+            "container_object": destination_id,
+            "source_object": source_id,
+            "anchor": "interior",
+            "local_position": local_position,
+            "occupied_count": len(occupied),
+            "allocator": "live_world_floor_grid",
+        }
+        (sub_dir / "placement_assignment.json").write_text(json.dumps(placement, ensure_ascii=False, indent=2), encoding="utf-8")
+        return override_path, placement
+
+    def _objects_inside_container(self, container_id: str, bounds=None, exclude: set[str] | None = None) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        if self.world_state is None:
+            return []
+        registry = SceneRegistry.model_validate(self.scene_registry)
+        container_state = self.world_state.objects.get(container_id)
+        container_item = next((item for item in registry.objects if item.object_id == container_id), None)
+        if container_state is None or container_item is None:
+            return []
+        if bounds is None:
+            return []
+        local_min, local_max = bounds
+        occupied = []
+        excluded = exclude or set()
+        for item in registry.objects:
+            if item.object_id == container_id or item.object_id in excluded or item.object_id not in self.world_state.objects:
+                continue
+            state = self.world_state.objects[item.object_id]
+            dimensions = item.dimensions_m or (0.06, 0.06, 0.06)
+            x = state.position[0] - container_state.position[0]
+            y = state.position[1] - container_state.position[1]
+            relative_z = state.position[2] - container_state.position[2]
+            # The controller reports the object's center; a released object
+            # resting on the floor can therefore have its center slightly
+            # below the authored interior floor plane.
+            z_half = dimensions[2] / 2
+            if (local_min[0] <= x <= local_max[0]
+                    and local_min[1] <= y <= local_max[1]
+                    and local_min[2] - z_half <= relative_z <= local_max[2] + z_half):
+                occupied.append(((x - dimensions[0] / 2, x + dimensions[0] / 2), (y - dimensions[1] / 2, y + dimensions[1] / 2)))
+        return occupied
 
     def _run_scene_edit(self, instruction: str, edit: SceneEditIntent, turn_dir: Path) -> dict[str, Any]:
         if self.origin != "generated" or self.scene_path is None or self.control is None or self.world_state is None:

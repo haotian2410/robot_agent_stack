@@ -217,7 +217,7 @@ class PipelineEngine:
             # artifact for auditability.
             expansion = {}
             assignment_plan_payload = None
-            if any(entity.quantity_mode.value == "all" and entity.count > 1 for entity in intent.entities):
+            if any(entity.quantity_mode.value == "all" and (entity.count > 1 or entity.all_available) for entity in intent.entities):
                 task, expansion = expand_grounded_task(
                     task,
                     registry.entity_members,
@@ -337,7 +337,7 @@ class PipelineEngine:
                     category=entity.category,
                     color=entity.color,
                     quantity_mode=entity.quantity_mode,
-                    expected_count=entity.count,
+                    expected_count=(None if entity.all_available and not entity.count_explicit else entity.count),
                     members=members,
                 ))
             grounded_semantic_task = GroundedSemanticTask(
@@ -435,7 +435,8 @@ class PipelineEngine:
 
         unresolved = [
             entity for entity in entities
-            if len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) < required_count(entity)
+            if (entity.all_available and not candidate_map.get(entity.entity_id))
+            or len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) < required_count(entity)
         ]
         vision_used = bool(unresolved)
         visual_grounding = {
@@ -449,7 +450,7 @@ class PipelineEngine:
                 value for relation in intent.spatial_relations if relation.scope == "selection"
                 for value in (relation.subject, relation.reference) if value
             }
-            queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=(entity.quantity_mode.value == "candidate_pool" or entity.entity_id in selection_entities)) for entity in unresolved]
+            queries = [VisionQuery(id=entity.entity_id, name=entity.semantic_name, category=entity.category, color=entity.color, all=(entity.all_available or entity.quantity_mode.value == "candidate_pool" or entity.entity_id in selection_entities)) for entity in unresolved]
             budget.consume("vision_grounding")
             detection = self.vision.detect(VisionGroundingRequest(entities=queries, rgb_path=str(observation.rgb_path)))
             self._capture(budget, "vision_grounding", self.vision)

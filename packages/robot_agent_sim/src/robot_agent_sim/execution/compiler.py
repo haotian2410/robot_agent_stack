@@ -157,9 +157,16 @@ def compile_execution_bundle(
     (output / "compiled_step_trace.json").write_text(
         json.dumps(traces, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    (output / "placement_assignment.json").write_text(
-        json.dumps(placement_assignments, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    placement_path = output / "placement_assignment.json"
+    if placement_path.is_file():
+        try:
+            live_assignment = json.loads(placement_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            live_assignment = None
+        payload = {"live": live_assignment, "compiled": placement_assignments}
+    else:
+        payload = placement_assignments
+    placement_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return bundle
 
 

@@ -84,7 +84,9 @@ class MujocoSceneBackend:
         from ...scene.support_surfaces import WORK_TABLE
         table = ET.SubElement(world, "body", name=WORK_TABLE.body_name, pos=" ".join(str(v) for v in WORK_TABLE.position))
         half_x, half_y, half_z = (value / 2 for value in WORK_TABLE.dimensions_m)
-        ET.SubElement(table, "geom", name="work_table_top", type="box", pos=f"0 0 {-half_z + WORK_TABLE.thickness_m / 2}", size=f"{half_x} {half_y} {WORK_TABLE.thickness_m / 2}", rgba="0.48 0.28 0.12 1")
+        # WORK_TABLE.position is the public contact plane, so the tabletop
+        # box is centred below it and its upper surface is exactly z=0.
+        ET.SubElement(table, "geom", name="work_table_top", type="box", pos=f"0 0 {-half_z}", size=f"{half_x} {half_y} {WORK_TABLE.thickness_m / 2}", rgba="0.48 0.28 0.12 1")
         ET.SubElement(world, "camera", name="scene_camera", pos="0 0 1.5", quat="1 0 0 0", fovy="45")
     @staticmethod
     def _add_asset(asset, record):

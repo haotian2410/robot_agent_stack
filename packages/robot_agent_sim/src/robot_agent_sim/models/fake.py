@@ -121,7 +121,8 @@ class FakeTaskUnderstandingProvider:
             return values[value] if value in values else int(value)
 
         def quantity_mode_for(token):
-            if any(marker in text for marker in ("都", "全部", "每个", "每只", "each", "all")):
+            all_markers = ("都", "全部", "所有", "每个", "每只", "each", "all")
+            if any(re.search(rf"{re.escape(marker)}\s*(?:的)?\s*{re.escape(token)}", text, re.IGNORECASE) for marker in all_markers):
                 return QuantityMode.ALL
             count = quantity_for(token)
             if count > 1 and any(marker in text for marker in ("中", "其中")):

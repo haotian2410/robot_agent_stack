@@ -42,6 +42,13 @@ def allocate_interior_slots(container_min, container_max, object_dimensions, occ
         if not any(_overlap(box, other) for other in occupied):
             slots.append(PlacementSlot(f"interior_slot_{index}", candidate))
             index += 1
+    # Small authored containers sometimes have only one floor cell while the
+    # runtime still permits stacking (for example a fruit whose mesh is wider
+    # than the nominal basket footprint).  Use a deterministic vertical slot
+    # when there is room above the occupied floor cell instead of reusing the
+    # same 3-D placement and silently overlapping it.
+    if not slots and occupied and max_z - min_z >= 2 * height:
+        slots.append(PlacementSlot("interior_slot_vertical", (center_x, center_y, min_z + 1.5 * height)))
     return slots
 
 def _overlap(a, b):

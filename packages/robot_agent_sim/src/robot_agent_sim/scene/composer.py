@@ -112,7 +112,12 @@ class SceneComposer:
                         reference_item.position[1],
                         reference_item.position[2],
                     )
-            count = int(entity.count) if entity.quantity_mode == QuantityMode.ALL else 1
+            # ``all_available`` means the generated scene must contain an
+            # actual population, even though the user did not provide a
+            # numeric count.  Two is the minimum useful population for
+            # relation/selection demonstrations; uploaded scenes use their
+            # authored population instead.
+            count = (max(int(entity.count), 2) if entity.all_available else int(entity.count)) if entity.quantity_mode == QuantityMode.ALL else 1
             members = []
             for index in range(count):
                 item = self._make_object(entity, assets[entity_id], index + 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))

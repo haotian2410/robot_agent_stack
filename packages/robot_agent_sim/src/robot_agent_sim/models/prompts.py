@@ -73,6 +73,15 @@ E. “先把两个球向右移动5厘米，再把它们向前移动5厘米”：
 F. “打开两个柜门”：door count=2；保留 door 与 handle 语义，物理配对由后续 grounding 完成。
 G. “增加一个香蕉”：scene_edit relation/reference 都为 null。
 
+## 14. Turn 输出结构示例（字段必须嵌套）
+scene_edit 必须把编辑意图放在 scene_edit 对象中，不能把 operation、semantic_name、category、count、relation、reference 放在顶层。例如：
+{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":"right_of","reference":"basket"},"entities":[],"operations":[],"relations":[],"scene_query":null,"session_control":null}
+没有参照物时 relation 和 reference 同时为 null：
+{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":null,"reference":null},"entities":[],"operations":[],"relations":[],"scene_query":null,"session_control":null}
+scene_query 和 session_control 也必须分别嵌套在 scene_query/session_control 中，并且不要生成 robot operations。例如：
+{"status":"accepted","turn_kind":"scene_query","scene_edit":null,"scene_query":{"query":"count","semantic_name":"apple","category":"fruit","referent":false},"session_control":null,"entities":[],"operations":[],"relations":[]}
+{"status":"accepted","turn_kind":"session_control","scene_edit":null,"scene_query":null,"session_control":{"action":"pause"},"entities":[],"operations":[],"relations":[]}
+
 实体 id 使用简短稳定 snake_case。source/destination/target/reference 必须引用 entities 中的 id。禁止输出 explanation、operation_id、XYZ、object_id、模型信息、Atomic Skill 步骤和 task_types。"""
 
 

@@ -118,7 +118,7 @@ class QwenHTTPProvider:
         content = prompt_payload({"instruction": request.instruction})
         raw_value = json.loads(self._call("task_understanding", TASK_UNDERSTANDING_PROMPT, content))
         self.last_raw_values["task_understanding"] = raw_value
-        value = dict(raw_value) if isinstance(raw_value, dict) else raw_value
+        value = normalize_turn_output_shape(raw_value)
         # Accept the prototype's echoed instruction for compatibility, but do
         # not expose it as part of the minimal parser contract.
         if isinstance(value, dict):
@@ -164,3 +164,22 @@ def _extract_json(content: str) -> str:
     if not isinstance(value, dict) or text[end:].strip():
         raise QwenProviderError("model output must be exactly one JSON object")
     return json.dumps(value, ensure_ascii=False)
+
+
+def normalize_turn_output_shape(value: Any) -> Any:
+    """Repair only a known provider-shape error before contract validation.
+
+    Some local Qwen checkpoints follow the field semantics from the prompt but
+    flatten scene-edit fields into the outer object.  Moving those fields into
+    the schema-mandated ``scene_edit`` object is structure-only repair: it does
+    not infer values or change the user's meaning.
+    """
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    if normalized.get("turn_kind") == "scene_edit" and not normalized.get("scene_edit"):
+        required = ("operation", "semantic_name", "category")
+        if all(field in normalized for field in required):
+            fields = ("operation", "semantic_name", "category", "count", "relation", "reference")
+            normalized["scene_edit"] = {field: normalized.pop(field) for field in fields if field in normalized}
+    return normalized
