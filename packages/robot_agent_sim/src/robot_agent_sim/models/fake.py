@@ -156,9 +156,12 @@ class FakeTaskUnderstandingProvider:
             if not any(entity.category == "ball" for entity in entities):
                 ball_count = quantity_for("球") if "球" in text else quantity_for("ball")
                 add("ball_01", "ball", "ball", count=ball_count, quantity_mode=QuantityMode.ALL if ball_count > 1 else QuantityMode.SINGLE)
-        if ("盒" in text or "box" in low) and not any(entity.category == "container" for entity in entities):
-            box_count = quantity_for("盒子") if "盒子" in text else quantity_for("box")
-            add("open_box_01", "open box", "container", None, count=box_count, quantity_mode=QuantityMode.ALL if box_count > 1 else QuantityMode.SINGLE)
+        if "盒" in text or "box" in low:
+            if not any(entity.category == "container" for entity in entities):
+                box_count = quantity_for("盒子") if "盒子" in text else quantity_for("box")
+                add("open_box_01", "open box", "container", None, count=box_count, quantity_mode=QuantityMode.ALL if box_count > 1 else QuantityMode.SINGLE)
+            if "另一个盒子" in text or "another box" in low:
+                add("open_box_02", "another open box", "container")
         if "按钮" in text or "button" in low: add("button_01", "button", "button")
         if "柜门" in text or "cabinet door" in low:
             add("cabinet_door_01", "blue cabinet door", "door", "blue")
@@ -182,8 +185,10 @@ class FakeTaskUnderstandingProvider:
                     dialogue_ref=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_relative is None and dialogue_set_match is None),
                     dialogue_ref_set=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_set_match is not None),
                 )
-        if any(token in text or token in low for token in ("桌面", "桌上", "台面", "table", "架子", "shelf", "空位置", "空地方", "空位", "free space")):
+        if any(token in text or token in low for token in ("桌面", "桌上", "台面", "桌子", "table", "空位置", "空地方", "空位", "free space")):
             add("__table__", "table", "support_surface")
+        if any(token in text or token in low for token in ("架子", "架面", "shelf")):
+            add("shelf_01", "shelf", "support_surface")
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
         for label in ("a", "b", "c"):
@@ -195,7 +200,7 @@ class FakeTaskUnderstandingProvider:
         if not entities: add("target_01", "target object", "cube")
 
         relations: list[ParseRelation] = []
-        put = any(token in text for token in ("放进", "放入", "放到", "放在", "空位置", "空地方", "空位")) or "put" in low
+        put = any(token in text for token in ("放进", "放入", "放到", "放在", "放桌面", "放架子", "空位置", "空地方", "空位")) or "put" in low
         has_left = any(token in low for token in ("左", "西", "left", "west"))
         has_right = any(token in low for token in ("右", "东", "right", "east"))
         pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "往左", "往右", "往前", "往后", "往上", "往下", "move left", "move right", "move front", "move back", "move up", "move down"))

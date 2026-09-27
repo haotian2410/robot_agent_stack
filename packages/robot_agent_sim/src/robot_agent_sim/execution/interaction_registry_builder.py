@@ -243,7 +243,11 @@ def build_generated_registry(
                         "hold_on_success": True,
                         "timeout": 5.0,
                         "maximum_force": 40.0,
-                        "contact_required": False,
+                        # A generated object grasp is successful only when
+                        # MuJoCo reports bilateral pad contact and the
+                        # payload remains held.  Do not let a one-sided touch
+                        # pass as a valid grasp.
+                        "contact_required": True,
                         "slip_check": False,
                     },
                     "strategy_params": {

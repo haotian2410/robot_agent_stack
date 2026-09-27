@@ -176,6 +176,23 @@ class SceneSession:
             self._build_semantic_map()
             self._initialize_instance_indices()
         control_response, batch_report = self._execute_concrete_operations(result, turn_dir)
+        if batch_report.get("status") == "clarification_required":
+            # Placement resolution is a semantic precondition.  Do not label
+            # an unresolved support/reference as an execution failure or let
+            # the caller continue with a default anchor.
+            (self.output_root / "state").mkdir(exist_ok=True)
+            (self.output_root / "state" / "world_state.json").write_text(self.world_state.model_dump_json(indent=2), encoding="utf-8")
+            (self.output_root / "state" / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
+            self._record_dialogue(instruction, result)
+            self._write_session()
+            return {
+                "status": "clarification_required",
+                "error": batch_report.get("error", "请补充放置参照物。"),
+                "turn": self.turn_index,
+                "scene_version": self.scene_version,
+                "world_version": self.world_version,
+                "report": batch_report,
+            }
         (self.output_root / "state").mkdir(exist_ok=True)
         (self.output_root / "state" / "world_state.json").write_text(self.world_state.model_dump_json(indent=2), encoding="utf-8")
         (self.output_root / "state" / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
@@ -261,7 +278,15 @@ class SceneSession:
                 break
         completed = sum(item["status"] == "succeeded" for item in subtasks)
         failed = sum(item["status"] == "failed" for item in subtasks)
-        batch_status = "success" if failed == 0 and completed == len(operation_ids) else "partial_failure"
+        clarification_errors = [
+            str(item.get("error")) for item in subtasks
+            if item.get("status") == "failed" and str(item.get("error", "")).startswith("placement_clarification_required")
+        ]
+        batch_status = (
+            "clarification_required" if clarification_errors
+            else "success" if failed == 0 and completed == len(operation_ids)
+            else "partial_failure"
+        )
         batch = {
             "status": batch_status,
             # Keep the legacy execution-report shape at the chat boundary so
@@ -276,6 +301,8 @@ class SceneSession:
             "steps": combined_steps,
             "subtasks": subtasks,
         }
+        if clarification_errors:
+            batch["error"] = clarification_errors[0]
         (turn_dir / "batch_execution_report.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
         last = subtasks[-1].get("report", {}) if subtasks else {}
         combined = dict(last)

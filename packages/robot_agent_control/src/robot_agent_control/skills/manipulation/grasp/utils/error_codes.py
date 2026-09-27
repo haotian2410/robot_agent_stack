@@ -34,9 +34,10 @@ def failure_result(
     recoverable: bool,
     recommended_action: str = "Inspect the structured error and runtime context.",
     status: str = "failed",
+    details: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     value = code.value if isinstance(code, ErrorCode) else str(code)
-    return {
+    result = {
         "success": False,
         "status": status,
         "selection": None,
@@ -49,3 +50,6 @@ def failure_result(
             "recommended_action": recommended_action,
         },
     }
+    if details:
+        result["error"]["details"] = details
+    return result

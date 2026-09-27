@@ -90,6 +90,7 @@ class GraspSkill:
                 failed_stage=exc.failed_stage,
                 recoverable=exc.recoverable,
                 recommended_action=exc.recommended_action,
+                details=exc.details,
             )
         except TimeoutError as exc:
             return failure_result(

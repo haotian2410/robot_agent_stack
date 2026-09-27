@@ -3,10 +3,11 @@ from __future__ import annotations
 from ...contracts.placement import PlacementTargetKind, ResolvedPlacement
 from ...contracts.task_intent import SpatialRelationType
 from ...scene.support_surfaces import WORKSPACE_X, WORKSPACE_Y
-from .geometry import add, aabb, overlap, quaternion_rotate
+from .geometry import add, aabb, overlap, quaternion_inverse_rotate, quaternion_rotate
+from .feasibility import PlacementFeasibilityChecker, is_feasible
 
 
-def resolve_surface(*, source_id, reference_id, source_dimensions, world_state, registry, metadata, world_version, resolver_name="surface_placement"):
+def resolve_surface(*, source_id, reference_id, source_dimensions, world_state, registry, metadata, world_version, resolver_name="surface_placement", feasibility_checker: PlacementFeasibilityChecker | None = None):
     target = (metadata.get("objects", {}).get(reference_id) or {}) if metadata else {}
     spatial = target.get("spatial", {})
     region = (spatial.get("regions", {}) or {}).get("support_surface") or {
@@ -35,7 +36,11 @@ def resolve_surface(*, source_id, reference_id, source_dimensions, world_state, 
         if item.object_id in {source_id, reference_id} or item.object_id not in world_state.objects:
             continue
         state = world_state.objects[item.object_id]
-        relative = tuple(state.position[index] - host_position[index] for index in range(3))
+        relative_world = tuple(state.position[index] - host_position[index] for index in range(3))
+        # Occupancy is tested in the support frame.  Subtracting world XYZ
+        # directly makes a rotated shelf appear to have its objects in the
+        # wrong columns and can select an occupied cell.
+        relative = quaternion_inverse_rotate(relative_world, host_quaternion)
         dims = item.dimensions_m or (0.06, 0.06, 0.06)
         if low[0] - dims[0] <= relative[0] <= high[0] + dims[0] and low[1] - dims[1] <= relative[1] <= high[1] + dims[1]:
             occupied.append(aabb(relative, dims))
@@ -49,7 +54,8 @@ def resolve_surface(*, source_id, reference_id, source_dimensions, world_state, 
             # placement therefore uses the support plane itself; the live
             # session creates a separate elevated end-effector anchor.
             local = (round(x, 6), round(y, 6), round(max(0.0, high[2]), 6))
-            if not any(overlap(aabb(local, source_dimensions), box) for box in occupied):
+            world_candidate = add(host_position, quaternion_rotate(local, host_quaternion))
+            if not any(overlap(aabb(local, source_dimensions), box) for box in occupied) and is_feasible(feasibility_checker, source_id, world_candidate):
                 candidates.append(local)
             y += step
         x += step

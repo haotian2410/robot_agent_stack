@@ -4,9 +4,10 @@ from ...contracts.placement import PlacementTargetSpec, PlacementTargetKind, Res
 from ...contracts.task_intent import SpatialRelationType
 from ..placement_allocator import allocate_interior_slots
 from .geometry import add, quaternion_rotate, quaternion_inverse_rotate
+from .feasibility import PlacementFeasibilityChecker, is_feasible
 
 
-def resolve_container(spec: PlacementTargetSpec, *, source_id, reference_id, source_dimensions, world_state, registry, metadata, world_version):
+def resolve_container(spec: PlacementTargetSpec, *, source_id, reference_id, source_dimensions, world_state, registry, metadata, world_version, feasibility_checker: PlacementFeasibilityChecker | None = None):
     target = (metadata.get("objects", {}).get(reference_id) or {}) if metadata else {}
     spatial = target.get("spatial", {})
     region = (spatial.get("regions", {}) or {}).get("interior")
@@ -45,7 +46,15 @@ def resolve_container(spec: PlacementTargetSpec, *, source_id, reference_id, sou
     )
     if not slots:
         raise ValueError(f"placement_capacity_exceeded: {reference_id}")
-    slot = slots[0]
+    feasible_slots = []
+    for candidate in slots:
+        candidate_local = (candidate.local_position[0], candidate.local_position[1], local_min[2])
+        candidate_world = add(container_state.position, quaternion_rotate(candidate_local, container_state.quaternion))
+        if is_feasible(feasibility_checker, source_id, candidate_world):
+            feasible_slots.append(candidate)
+    if not feasible_slots:
+        raise ValueError(f"placement_no_feasible_candidate: {reference_id}")
+    slot = feasible_slots[0]
     # The allocator stores a centre-height for geometric packing, while the
     # generated MuJoCo body frame is translated to the object's contact
     # (lowest-vertex) plane.  Persist the physical body pose in that frame;

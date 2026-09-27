@@ -3,9 +3,10 @@ from __future__ import annotations
 from ...contracts.placement import PlacementTargetKind, ResolvedPlacement
 from ...contracts.task_intent import SpatialRelationType
 from .geometry import aabb, overlap
+from .feasibility import PlacementFeasibilityChecker, is_feasible
 
 
-def resolve_relative(*, source_id, reference_id, relation, source_dimensions, world_state, registry, world_version):
+def resolve_relative(*, source_id, reference_id, relation, source_dimensions, world_state, registry, world_version, feasibility_checker: PlacementFeasibilityChecker | None = None):
     reference_state = world_state.objects.get(reference_id)
     if reference_state is None:
         raise ValueError(f"placement_reference_missing: {reference_id}")
@@ -37,6 +38,8 @@ def resolve_relative(*, source_id, reference_id, relation, source_dimensions, wo
             and overlap(candidate_box, aabb(world_state.objects[item.object_id].position, item.dimensions_m or (0.06, 0.06, 0.06)))
             for item in registry.objects
         ):
+            continue
+        if not is_feasible(feasibility_checker, source_id, position):
             continue
         candidates.append((position, relation.value if relation != SpatialRelationType.NEAR else "near_candidate"))
     if not candidates:

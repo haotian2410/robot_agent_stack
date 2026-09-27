@@ -275,6 +275,24 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             )
     from ..semantics.placement_normalizer import normalize_placement_operations
     parsed, placement_repairs = normalize_placement_operations(parsed, instruction)
+    clarification = next(
+        (repair for repair in placement_repairs if repair.get("type") == "placement_clarification_required"),
+        None,
+    )
+    if clarification is not None:
+        reason = clarification.get("reason")
+        explanation = (
+            "当前指令要求放到容器上方，但该容器没有声明可支撑的顶部平面；"
+            "请明确改为放进容器、放到桌面，或指定可放置的顶部。"
+            if reason == "container_has_no_supportable_top_surface"
+            else "放置目标的语义不明确或当前场景没有该支撑面，请明确桌面、架子或其他可用支撑面。"
+        )
+        return TaskIntent(
+            status=TaskStatus.CLARIFICATION_REQUIRED,
+            instruction=instruction,
+            semantic_repairs=[*quantity_repairs, *placement_repairs],
+            explanation=explanation,
+        )
     explicit_evidence = extract_semantic_evidence(instruction)
     semantic_aliases = {"苹果": "apple", "香蕉": "banana", "棒球": "baseball", "球": "ball", "盒子": "box", "篮子": "basket"}
     motion_spans = _extract_explicit_motion_spans(instruction)

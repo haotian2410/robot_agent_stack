@@ -157,12 +157,34 @@ class PipelineEngine:
                 observation = self.backend.renderer.render(xml_path, registry, out)
                 grounded = []
                 for entity in intent.entities:
-                    if entity.entity_id == TABLE_ENTITY or entity.category == "support_surface":
+                    if entity.entity_id == TABLE_ENTITY:
                         grounded.append(GroundedEntity(
                             entity_id=entity.entity_id,
                             semantic_name=entity.semantic_name,
                             object_id=TABLE_ENTITY,
                             body_name=WORK_TABLE.body_name,
+                            category=entity.category,
+                            aliases=entity.aliases,
+                            quantity_mode=entity.quantity_mode,
+                            grounding_method="asset_scene_binding",
+                        ))
+                        continue
+                    if entity.category == "support_surface":
+                        # Only the synthetic tabletop has an implicit
+                        # generated backing body.  Named shelves/stands must
+                        # be present in the uploaded/generated registry; do
+                        # not silently bind them to the table.
+                        object_id = registry.bindings.get(entity.entity_id)
+                        if object_id is None:
+                            raise ValueError(f"support_surface_missing: {entity.entity_id}")
+                        item = registry.by_object_id(object_id)
+                        grounded.append(GroundedEntity(
+                            entity_id=entity.entity_id,
+                            semantic_name=entity.semantic_name,
+                            object_id=object_id,
+                            body_name=item.body_name,
+                            model_id=item.model_id,
+                            model_name=item.model_name,
                             category=entity.category,
                             aliases=entity.aliases,
                             quantity_mode=entity.quantity_mode,
@@ -403,6 +425,8 @@ class PipelineEngine:
                 else "model_output_truncated" if "model_output_truncated" in message
                 else "clarification_required" if "semantic_conflict:" in message
                 else "task_semantic_invalid" if "task_semantic_invalid:" in message
+                else "clarification_required" if "support_surface_missing" in message or "named_support_surface_missing" in message or "placement_clarification_required" in message
+                else "physical_capability_conflict" if "placement_no_feasible_candidate" in message or "placement_capacity_exceeded" in message
                 else "asset_missing" if "asset_missing" in message
                 else "unsupported_recipe" if "unsupported_recipe" in message
                 else "grounding_ambiguous" if "grounding_ambiguous" in message

@@ -92,7 +92,8 @@ class MujocoGripperController:
         return self.open(self.maximum_width if width is None else width, timeout=timeout)
 
     def get_state(self, target_object_id: str | None = None) -> dict[str, Any]:
-        contact = self._target_bilateral_contact(target_object_id)
+        contact_sides = self._target_pad_contacts(target_object_id)
+        contact = contact_sides == {"left", "right"}
         held = self._target_is_held(target_object_id)
         return {
             "known": True,
@@ -103,6 +104,15 @@ class MujocoGripperController:
             "object_present": contact or held,
             "holding": self._holding and held,
             "slip_detected": False,
+            # Keep the evidence inspectable instead of collapsing it to a
+            # single boolean.  A one-pad contact explains why a grasp did not
+            # attach, while ``holding`` confirms the controller's temporary
+            # kinematic attachment is still valid.
+            "contact_sides": sorted(contact_sides),
+            "left_pad_contact": "left" in contact_sides,
+            "right_pad_contact": "right" in contact_sides,
+            "holding_object_id": target_object_id if self._holding and held else None,
+            "attachment_mode": "kinematic_free_body" if self._holding and held else None,
         }
 
     @property
@@ -314,11 +324,15 @@ class MujocoGripperController:
         ``holding`` mismatches.  Treating left and right pad contact as the
         minimum physical evidence keeps the success result honest.
         """
+        return self._target_pad_contacts(target_object_id) == {"left", "right"}
+
+    def _target_pad_contacts(self, target_object_id: str | None) -> set[str]:
+        """Return the finger-pad sides with current MuJoCo target contact."""
         if not target_object_id:
-            return False
+            return set()
         target_body = self._target_body_id(target_object_id)
         if target_body is None:
-            return False
+            return set()
         sides: set[str] = set()
         for index in range(self.data.ncon):
             contact = self.data.contact[index]
@@ -338,7 +352,7 @@ class MujocoGripperController:
                 sides.add("left")
             elif "right" in pad_name:
                 sides.add("right")
-        return sides == {"left", "right"}
+        return sides
 
     def _held_object_has_gripper_contact(self) -> bool:
         """Return whether the currently attached payload still touches a finger pad."""
