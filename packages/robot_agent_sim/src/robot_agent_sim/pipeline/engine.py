@@ -10,8 +10,9 @@ from ..assets.registry import AssetRegistry
 from ..assets.resolver import AssetResolver
 from ..backends.mujoco.backend import MujocoSceneBackend
 from ..contracts.grounded_task import GroundedEntity, GroundedTask
+from ..contracts.grounded_set import GroundedMember, GroundedEntitySet, GroundedSemanticTask
 from ..contracts.goal import GoalCondition
-from ..contracts.task_intent import TaskStatus
+from ..contracts.task_intent import QuantityMode, TaskStatus
 from ..contracts.turn import TurnKind
 from ..grounding.iou import match_detections
 from ..grounding.name_matching import exact_name_match
@@ -25,10 +26,12 @@ from ..models.fake import FakeSkillPlanningProvider, FakeTaskUnderstandingProvid
 from ..models.skill_planning import SkillPlanningRequest, enrich_skill_plan
 from ..models.task_understanding import TaskParseLLMOutput, TaskUnderstandingRequest, enrich_task
 from ..models.motion_policy import MotionPolicy
+from ..semantics.evidence import extract_semantic_evidence
 from ..models.vision_grounding import VisionGroundingRequest, VisionQuery
 from ..planning.context_builder import PlannerInitialState, build_planner_context
 from ..planning.recipe_planner import RecipePlanner
 from ..planning.semantic_validator import validate_semantic_plan
+from ..planning.task_expander import expand_grounded_task
 from ..scene.composer import SceneComposer
 from ..scene.constraints import SceneConstraintError, validate_generated_scene
 from ..skills.registry import REGISTRY
@@ -88,7 +91,7 @@ class PipelineEngine:
             **kwargs,
         )
 
-    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None, held_object_id: str | None = None, excluded_object_ids: set[str] | None = None) -> PipelineResult:
+    def plan(self, instruction: str, robot: str = "panda", scene: Path | None = None, seed: int = 0, output_dir: Path | str | None = None, planner: str = "recipe", interaction_registry: Path | None = None, world_positions: dict[str, tuple[float, float, float] | list[float]] | None = None, live_observation: SceneObservation | None = None, semantic_map: dict[str, Any] | None = None, current_registry=None, session_origin: str | None = None, explicit_bindings: dict[str, str | list[str]] | None = None, explicit_object_id: str | None = None, parsed_turn: TaskParseLLMOutput | None = None, planning_mode: ModelCallMode | None = None, held_object_id: str | None = None, excluded_object_ids: set[str] | None = None) -> PipelineResult:
         out = Path(output_dir or "var"); out.mkdir(parents=True, exist_ok=True)
         intent = None; registry = None; observation = None; visual_grounding = None
         planner_artifacts: dict[str, str] = {}
@@ -117,13 +120,26 @@ class PipelineEngine:
             if parsed.turn_kind != TurnKind.ROBOT_TASK:
                 raise ValueError(f"turn kind {parsed.turn_kind.value} must be handled by SceneSession")
             intent = enrich_task(parsed, instruction, self.motion_policy)
+            evidence_path = out / "explicit_semantic_evidence.json"
+            evidence = extract_semantic_evidence(instruction)
+            evidence_path.write_text(json.dumps({
+                "quantities": [e.__dict__ for e in evidence.quantities],
+                "assignments": [e.__dict__ for e in evidence.assignments],
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
             if intent.status != TaskStatus.ACCEPTED:
                 return self._write_result(PipelineResult(task_intent=intent.model_dump(mode="json"), status=intent.status.value, model_call_count=budget.calls, model_usage=budget.summary(), planner=planner_used, route=route), out)
             bindings = dict(explicit_bindings or {})
             if explicit_object_id:
                 source_entity_id = next((op.source or op.target for op in intent.operations if op.source or op.target), None)
                 if source_entity_id:
-                    bindings.setdefault(source_entity_id, explicit_object_id)
+                    bindings.setdefault(source_entity_id, [explicit_object_id])
+            bindings = {entity_id: ([value] if isinstance(value, str) else list(value)) for entity_id, value in bindings.items()}
+            for entity in intent.entities:
+                values = bindings.get(entity.entity_id, [])
+                if len(values) > 1:
+                    entity.count = len(values)
+                    entity.quantity_mode = QuantityMode.ALL
+                    entity.count_explicit = True
             explicit_entity_ids = set(bindings)
             ground_entities = [entity for entity in intent.entities if entity.entity_id not in explicit_entity_ids]
 
@@ -148,8 +164,9 @@ class PipelineEngine:
                 registry = current_registry or self.backend.load_uploaded(Path(scene), robot)
                 observation = live_observation or self.backend.renderer.render(Path(scene), registry, out)
                 candidate_map = {entity.entity_id: [] for entity in intent.entities}
-                for entity_id, object_id in bindings.items():
-                    merge_candidate(candidate_map[entity_id], GroundingCandidate(object_id=object_id, sources={"dialogue"}))
+                for entity_id, object_ids in bindings.items():
+                    for object_id in object_ids:
+                        merge_candidate(candidate_map[entity_id], GroundingCandidate(object_id=object_id, sources={"dialogue"}))
                 if interaction_registry is not None:
                     authored_candidates, _, authored_model, _ = collect_interaction_candidates(
                         ground_entities, interaction_registry, scene, excluded_object_ids=excluded_object_ids
@@ -175,10 +192,17 @@ class PipelineEngine:
                 grounded, visual_grounding = self._resolve_candidate_map(
                     intent, intent.entities, candidate_map, registry, observation, current_positions, budget, excluded_object_ids
                 )
+                set_members = {entity.entity_id: sorted({item.get("object_id") for item in candidate_map.get(entity.entity_id, []) if item.get("object_id")})
+                               for entity in intent.entities if entity.quantity_mode.value == "all"}
+                if set_members:
+                    registry = registry.model_copy(update={"entity_members": {**registry.entity_members, **set_members}})
                 asset_bindings = {}
 
             if bindings:
-                for explicit_entity_id, explicit_object_id in bindings.items():
+                for explicit_entity_id, explicit_object_ids in bindings.items():
+                    if len(explicit_object_ids) != 1:
+                        continue
+                    explicit_object_id = explicit_object_ids[0]
                     explicit_item = next((item for item in registry.objects if item.object_id == explicit_object_id), None)
                     explicit_instance = next((item for item in observation.instances if item.object_id == explicit_object_id), None)
                     if explicit_item is None or explicit_instance is None:
@@ -187,6 +211,49 @@ class PipelineEngine:
                     source_entity = next(entity for entity in intent.entities if entity.entity_id == explicit_entity_id)
                     grounded.insert(0, GroundedEntity(entity_id=explicit_entity_id, semantic_name=source_entity.semantic_name, object_id=explicit_object_id, body_name=explicit_item.body_name, model_id=explicit_item.model_id, model_name=explicit_item.model_name, category=source_entity.category, color=source_entity.color, aliases=source_entity.aliases, quantity_mode=source_entity.quantity_mode, grounding_method="dialogue_binding", instance_bbox=explicit_instance.bbox))
             task = GroundedTask(instruction=intent.instruction, task_types=intent.task_types, entities=grounded, operations=intent.operations, spatial_relations=intent.spatial_relations, scene_id=registry.scene_id)
+            # Expand semantic sets only after grounding.  Planners and the
+            # control compiler continue to receive ordinary single-instance
+            # operations, while the set-to-member mapping is retained as an
+            # artifact for auditability.
+            expansion = {}
+            assignment_plan_payload = None
+            if any(entity.quantity_mode.value == "all" and entity.count > 1 for entity in intent.entities):
+                task, expansion = expand_grounded_task(
+                    task,
+                    registry.entity_members,
+                    registry,
+                    pairwise=any(item.pairwise for item in evidence.assignments),
+                )
+                expansion_path = out / "operation_expansion.json"
+                expansion_path.write_text(json.dumps(expansion, ensure_ascii=False, indent=2), encoding="utf-8")
+                assignment_plan_payload = {
+                    "groups": [
+                        {
+                            "operation_id": operation_id,
+                            "mode": value.get("mode", "single"),
+                            "assignments": value.get("children", []),
+                        }
+                        for operation_id, value in expansion.items()
+                    ]
+                }
+                assignment_path = out / "assignment_plan.json"
+                assignment_path.write_text(json.dumps(assignment_plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            elif len(task.operations) > 1:
+                # Heterogeneous explicit mappings have no set expansion, but
+                # still need an auditable assignment artifact.
+                assignment_plan_payload = {
+                    "groups": [{
+                        "operation_id": operation.operation_id,
+                        "mode": "single",
+                        "assignments": [{
+                            "operation_id": operation.operation_id,
+                            "source_object": operation.source,
+                            "destination_object": operation.destination,
+                        }],
+                    } for operation in task.operations]
+                }
+                assignment_path = out / "assignment_plan.json"
+                assignment_path.write_text(json.dumps(assignment_plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             recipe_supported = RecipePlanner.supports(task)
             if planner == "recipe" or (planner == "auto" and recipe_supported):
                 if not recipe_supported:
@@ -236,6 +303,7 @@ class PipelineEngine:
             if (out / "raw_task_understanding.txt").is_file():
                 result.artifacts["raw_task_understanding.txt"] = str(out / "raw_task_understanding.txt")
             result.artifacts["normalized_task_parse.json"] = str(normalized_task_path)
+            result.artifacts["explicit_semantic_evidence.json"] = str(evidence_path)
             if "validation_path" in locals():
                 result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             if intent.semantic_repairs:
@@ -243,6 +311,46 @@ class PipelineEngine:
                 repairs_path.write_text(json.dumps(intent.semantic_repairs, ensure_ascii=False, indent=2), encoding="utf-8")
                 result.artifacts["semantic_repairs.json"] = str(repairs_path)
             result.artifacts.update(planner_artifacts)
+            if expansion:
+                result.artifacts["operation_expansion.json"] = str(out / "operation_expansion.json")
+                result.artifacts["assignment_plan.json"] = str(out / "assignment_plan.json")
+            elif assignment_plan_payload is not None:
+                result.artifacts["assignment_plan.json"] = str(out / "assignment_plan.json")
+            semantic_sets = []
+            for entity in intent.entities:
+                member_ids = [value for value in registry.entity_members.get(entity.entity_id, [registry.bindings.get(entity.entity_id)]) if value]
+                members = []
+                for object_id in member_ids:
+                    item = next((value for value in registry.objects if value.object_id == object_id or value.body_name == object_id), None)
+                    if item is None:
+                        continue
+                    members.append(GroundedMember(
+                        object_id=item.object_id,
+                        body_name=item.body_name,
+                        model_id=item.model_id,
+                        model_name=item.model_name,
+                        grounding_method="asset_scene_binding" if scene is None else "interaction_registry",
+                    ))
+                semantic_sets.append(GroundedEntitySet(
+                    entity_id=entity.entity_id,
+                    semantic_name=entity.semantic_name,
+                    category=entity.category,
+                    color=entity.color,
+                    quantity_mode=entity.quantity_mode,
+                    expected_count=entity.count,
+                    members=members,
+                ))
+            grounded_semantic_task = GroundedSemanticTask(
+                instruction=intent.instruction,
+                task_types=intent.task_types,
+                entity_sets=semantic_sets,
+                operations=intent.operations,
+                spatial_relations=intent.spatial_relations,
+                scene_id=registry.scene_id,
+            )
+            semantic_task_path = out / "grounded_semantic_task.json"
+            semantic_task_path.write_text(grounded_semantic_task.model_dump_json(indent=2), encoding="utf-8")
+            result.artifacts["grounded_semantic_task.json"] = str(semantic_task_path)
             if "raw_task_path" in locals():
                 result.artifacts["raw_task_understanding.json"] = str(raw_task_path)
             if (out / "raw_task_understanding.txt").is_file():
@@ -258,6 +366,12 @@ class PipelineEngine:
         except (OSError, ValueError, KeyError, RuntimeError, ValidationError, ModelCallBudgetExceeded) as exc:
             if isinstance(exc, GroundingResolutionError):
                 visual_grounding = exc.visual_grounding
+            raw_understanding = getattr(self.understanding, "last_raw_values", {}).get("task_understanding")
+            if raw_understanding is not None:
+                (out / "raw_task_understanding.json").write_text(json.dumps(raw_understanding, ensure_ascii=False, indent=2), encoding="utf-8")
+            raw_understanding_text = getattr(self.understanding, "last_raw_text", {}).get("task_understanding")
+            if raw_understanding_text is not None:
+                (out / "raw_task_understanding.txt").write_text(raw_understanding_text, encoding="utf-8")
             if planner_used == "qwen":
                 # The HTTP call can succeed while schema or semantic
                 # validation fails. Capture usage and the final JSON response
@@ -313,7 +427,11 @@ class PipelineEngine:
                 if value.get("world_position") is not None:
                     positions.setdefault(value["object_id"], value["world_position"])
         def required_count(entity):
-            return max(int(entity.count), 2) if entity.quantity_mode.value == "candidate_pool" else 1
+            if entity.quantity_mode.value == "candidate_pool":
+                return max(int(entity.count), 2)
+            if entity.quantity_mode.value == "all" and getattr(entity, "count_explicit", False):
+                return int(entity.count)
+            return 1
 
         unresolved = [
             entity for entity in entities
@@ -377,7 +495,7 @@ class PipelineEngine:
         mismatched = [
             (entity.entity_id, int(entity.count), len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}))
             for entity in entities
-            if entity.quantity_mode.value == "candidate_pool"
+            if (entity.quantity_mode.value == "candidate_pool" or (entity.quantity_mode.value == "all" and getattr(entity, "count_explicit", False)))
             and int(entity.count) > 1
             and len({item.get("object_id") for item in candidate_map.get(entity.entity_id, [])}) > int(entity.count)
         ]
@@ -431,7 +549,10 @@ class PipelineEngine:
         result.model_usage.setdefault("route", result.route)
         result.model_usage.setdefault("planner", result.planner)
         provenance = {
-            "task_understanding": "qwen" if getattr(result, "planner", "recipe") == "qwen" and result.model_usage.get("stages") else "fake",
+            "task_understanding": "qwen" if any(
+                stage.get("stage") == "task_understanding" and stage.get("total_tokens", 0) > 0
+                for stage in result.model_usage.get("stages", [])
+            ) else "fake",
             "grounding": "asset_scene_binding" if result.route == "A" else ("interaction_registry" if result.interaction_registry else "visual_grounding"),
             "skill_planner": result.planner,
             "validator": "semantic" if result.planner == "qwen" else "recipe",
@@ -453,17 +574,20 @@ class PipelineEngine:
         if isinstance(result.task_intent, dict):
             for relation in result.task_intent.get("spatial_relations", []):
                 if relation.get("scope") == "goal":
-                    condition = GoalCondition(
-                        operation_id=None,
-                        relation=relation["relation"],
-                        subject=relation["subject"],
-                        reference=relation.get("reference"),
-                        source="explicit_goal",
-                        verification_mode="geometry",
-                    ).model_dump(mode="json")
+                    condition = {
+                        "operation_id": None,
+                        "relation": relation["relation"],
+                        "subject": relation["subject"],
+                        "reference": relation.get("reference"),
+                        "source": "explicit_goal",
+                        "verification_mode": "geometry",
+                    }
                     goal_conditions.append(condition)
-                    goal_condition_keys.add((condition["relation"], condition["subject"], condition["reference"]))
-            for operation in result.task_intent.get("operations", []):
+                    goal_condition_keys.add((condition["relation"], condition["subject"], condition.get("reference")))
+            # Goal conditions follow concrete expanded operations whenever a
+            # semantic set was expanded; otherwise use the original intent.
+            operation_source = (result.grounded_task or {}).get("operations") or result.task_intent.get("operations", [])
+            for operation in operation_source:
                 task_type = operation.get("task_type")
                 subject = operation.get("source") or operation.get("target")
                 reference = operation.get("destination") or operation.get("reference")
@@ -473,7 +597,7 @@ class PipelineEngine:
                     if key in goal_condition_keys:
                         continue
                     mode = "geometry" if inferred == "inside" else "articulation" if inferred in {"open", "closed"} else "world_state"
-                    condition = GoalCondition(operation_id=operation.get("operation_id"), relation=inferred, subject=subject, reference=reference, source="operation_inferred", verification_mode=mode).model_dump(mode="json")
+                    condition = GoalCondition(operation_id=operation.get("operation_id"), parent_operation_id=operation.get("operation_id", "").split("__", 1)[0] or None, subject_entity_id=subject, subject_object_id=next((e.get("object_id") for e in (result.grounded_task or {}).get("entities", []) if e.get("entity_id") == subject), None), reference_entity_id=reference, reference_object_id=next((e.get("object_id") for e in (result.grounded_task or {}).get("entities", []) if e.get("entity_id") == reference), None), relation=inferred, subject=subject, reference=reference, source="operation_inferred", verification_mode=mode).model_dump(mode="json")
                     goal_conditions.append(condition)
                     goal_condition_keys.add(key)
         semantic_validation = {

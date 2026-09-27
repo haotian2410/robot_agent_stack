@@ -8,6 +8,7 @@ from .task_intent import Operation, QuantityMode, SpatialRelation, TaskType
 class GroundedEntity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     entity_id: str
+    semantic_entity_id: str | None = None
     semantic_name: str = Field(min_length=1, max_length=100)
     object_id: str
     body_name: str | None = None

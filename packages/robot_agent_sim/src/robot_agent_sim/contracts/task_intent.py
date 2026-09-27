@@ -13,6 +13,7 @@ class TaskStatus(StrEnum):
     INVALID = "invalid"
     UNSUPPORTED_MULTI_OBJECT_EXECUTION = "unsupported_multi_object_execution"
     CLARIFICATION_REQUIRED = "clarification_required"
+    PHYSICAL_CAPABILITY_CONFLICT = "physical_capability_conflict"
 
 
 class TaskType(StrEnum):
@@ -76,6 +77,8 @@ class TaskEntity(BaseModel):
     color: str | None = None
     count: int = Field(default=1, ge=1, le=100)
     quantity_mode: QuantityMode = QuantityMode.SINGLE
+    count_explicit: bool = False
+    all_available: bool = False
 
 
 class SpatialRelation(BaseModel):

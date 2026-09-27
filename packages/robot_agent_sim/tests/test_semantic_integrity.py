@@ -107,12 +107,15 @@ def test_multiple_moves_cannot_broadcast_top_level_direction():
         enrich_task(parsed, "先移动苹果，再移动香蕉")
 
 
-def test_all_quantity_is_rejected_instead_of_silently_executing_one():
+def test_all_quantity_is_preserved_for_multi_object_expansion():
     request = type("Request", (), {"instruction": "把三个苹果都放进篮子"})()
     parsed = FakeTaskUnderstandingProvider().understand(request)
     intent = enrich_task(parsed, request.instruction)
-    assert intent.status.value == "unsupported_multi_object_execution"
-    assert intent.operations == []
+    assert intent.status.value == "accepted"
+    apple = next(entity for entity in intent.entities if entity.semantic_name == "apple")
+    assert apple.count == 3
+    assert apple.quantity_mode.value == "all"
+    assert len(intent.operations) == 1
 
 
 @pytest.mark.parametrize(

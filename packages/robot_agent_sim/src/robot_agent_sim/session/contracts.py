@@ -56,4 +56,5 @@ class DialogueState(BaseModel):
     model_config = ConfigDict(extra="forbid")
     recent_turns: list[str] = []
     referents: dict[str, str] = {}
+    referent_sets: dict[str, list[str]] = {}
     last_grounded_objects: dict[str, str] = {}

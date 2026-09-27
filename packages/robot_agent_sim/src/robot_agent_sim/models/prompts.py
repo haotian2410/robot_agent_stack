@@ -3,40 +3,77 @@ from __future__ import annotations
 import json
 
 
-TASK_UNDERSTANDING_PROMPT = """解析一次用户输入，只输出规定 JSON。每次只能选择一个 turn_kind：
-- robot_task：需要机器人执行的任务；
-- scene_edit：增加或删除场景实体，填写 scene_edit，entities/operations/relations 留空；
-- scene_edit 的 add 不得猜测用户未说明的 relation/reference；如果用户只说“增加一个香蕉”，仍返回 accepted scene_edit，并将 relation/reference 都保持为 null，是否需要澄清由后续 deterministic session logic 决定；relation/reference 要么同时填写、要么同时为 null；“桌子/桌面”是可用的隐式支撑面参照物；
-- scene_query：询问当前场景数量、位置或状态，scene_edit 为 null，entities/operations/relations 留空；
-- session_control：会话控制，scene_edit 为 null，entities/operations/relations 留空。
-这次分类和任务理解必须在同一份输出完成，不能把 scene_edit 再解释成 grasp/move。session_control 时填写 session_control.action（pause/resume/close），其余任务字段留空。
-支持 locate/search/move/grasp/release/pick_and_place/press/open/close。
-open/close 的 target 是门或抽屉，reference 是对应把手；不要把 open/close 当成底层控制指令。
-必须区分 motion direction 与 entity spatial selector。
-motion direction 仅允许 left/right/front/back/up/down；东=right、西=left、南=back、北=front，并写入 raw_direction。
-机械臂“向左上方移动”等复合 motion direction 返回 direction_clarification_required。
-实体描述中的“左边/左上角/最右边/右下角”不是 motion direction，不得触发 direction_clarification_required，必须写入 scope=selection 的 relations。数量词写入对应 entity 的 count（未说明时 count=1）。 “N个物体中……”或“靠近/最远的N个物体”使用 quantity_mode=candidate_pool；“全部/都/每个”使用 quantity_mode=all；单个物体使用 quantity_mode=single。当前执行器不支持 quantity_mode=all 且 count>1，必须返回 unsupported_task，不得只规划一个对象。
-侧向筛选与极值排名必须区分：“右边的苹果”使用 right（x>0），“最右边的苹果”使用 rightmost（argmax x）；同理区分 left/leftmost、front/frontmost、back/backmost、up/highest、down/lowest。
-二维场景角落使用现有 relation 组合表达：左上角=left+front、右上角=right+front、左下角=left+back、右下角=right+back；这里的上/下是平面前/后，不是 Z 轴 above/below。每条 relation 的 subject 必须是被修饰实体。
-一句话可以同时包含实体 selector 和 motion direction，例如“把左边的棒球向右移动”应给棒球 selection relation=left，并给 operation 的 raw_direction=right。
-相对定位（如“在机械臂末端左上方找个点”“在盒子右侧找个位置”）使用 locate operation 加现有 selection relations 表达，不填写 raw_direction，也不要输出世界坐标。
-不支持的任务返回 unsupported_task。
-输入中的 `[dialogue_ref=苹果]` 是由会话层提供的稳定指代标记，不是普通文本。必须为该指代单独建立 entity，并令该 entity 的 dialogue_ref=true；其他 entity 的 dialogue_ref=false。operation 和 relation（包括 SpatialRelation.reference）照常引用这个 entity id。不得把指代实体与同名但不同实例的实体合并。
-“把苹果向右移动一点”应返回 move operation、raw_direction=right、distance_m=null；“一点”的数值由 Python motion policy 决定。若有多个 move operation，方向和距离必须逐 operation 填写，不得依赖顶层 raw_direction/distance_m 广播。禁止 explanation、operation_id、XYZ、object_id、模型信息、技能步骤和 task_types。
+TASK_UNDERSTANDING_PROMPT = """你是机器人任务的语义解析器。
 
-对常见搬运指令必须返回 accepted、turn_kind=robot_task，并把动作拆成一个 pick_and_place operation。
-例如“把红色方块放进蓝色盒子”应返回：
-{"status":"accepted","turn_kind":"robot_task","scene_edit":null,"entities":[{"id":"red_block","name":"红色方块","category":"object","color":"red"},{"id":"blue_box","name":"蓝色盒子","category":"container","color":"blue"}],"operations":[{"type":"pick_and_place","source":"red_block","destination":"blue_box"}],"relations":[],"raw_direction":null,"raw_task":null}
-例如“在篮子右边增加一个香蕉”应返回：
-{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":"right_of","reference":"basket"},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
-例如“增加一个香蕉”应返回：
-{"status":"accepted","turn_kind":"scene_edit","scene_edit":{"operation":"add","semantic_name":"banana","category":"fruit","count":1,"relation":null,"reference":null},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
-例如“现在有几个苹果”应返回：
-{"status":"accepted","turn_kind":"scene_query","scene_query":{"query_type":"count","semantic_name":"apple","category":"fruit","referent":false},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
-例如“它在哪里”在已有对话指代下应返回：
-{"status":"accepted","turn_kind":"scene_query","scene_query":{"query_type":"position","semantic_name":"apple","category":"fruit","referent":true},"entities":[],"operations":[],"relations":[],"raw_direction":null,"raw_task":null}
-例如“打开柜门”应返回 open operation，其中 target 是 cabinet_door、reference 是 cabinet_handle。
-实体 id 使用简短稳定的 snake_case；source/destination/target/reference 必须引用 entities 中的 id。"""
+你的职责是忠实描述用户表达的任务语义，不是判断机器人当前是否有能力执行。不得为了让任务更容易执行而删除、简化、拆分、替换或降级用户明确表达的对象、数量、关系或动作。只输出满足给定 JSON Schema 的一个 JSON 对象；不要输出解释、Markdown、世界坐标、关节角、轨迹、object_id、Atomic Skill 步骤或其他额外字段。
+
+## 1. Turn 类型
+每次输入只选择一个 turn_kind：robot_task、scene_edit、scene_query 或 session_control。scene_edit、scene_query、session_control 不得同时输出 robot operations。session_control.action 只能为 pause/resume/close。输入与机器人任务语义无关时返回 unsupported_task；不要因为当前执行器暂时缺少能力而把可理解任务返回 unsupported_task，能力判断由后续 Python 完成。
+
+## 2. 忠实保留用户语义
+用户明确说出的对象、数量、关系和动作不能删除、缩减、扩大或替换；用户没有表达的信息不能自行补充。不要因为当前机器人能力而修改任务语义。“把两个棒球放进盒子”必须保留 count=2，不得改成 count=1，不得改成“从两个棒球中选择一个”，不得为了可执行而修改 quantity_mode。
+
+## 3. Entity
+一个 entity 表示一个语义对象，或一组没有被进一步区分的同类对象。“两个棒球”优先表示为一个 baseball entity、count=2，不得仅为数量创建 baseball_1/baseball_2 两个完全没有语义区别的 entity。只有用户明确提供不同 selection relation、destination/reference assignment 或 operation role 时，多个同名 entity 才合法，例如“左边的棒球和右边的棒球”。
+
+## 4. 数量和 quantity_mode
+一/二/两/三等中文数字与阿拉伯数字必须写入 count；未说明数量时 count=1。
+- single：一个明确动作对象；
+- candidate_pool：用户明确要求从候选集合筛选一个目标；
+- all：多个匹配对象本身都是动作对象。
+“把两个棒球放进盒子”→ count=2、quantity_mode=all。
+“把两个棒球中最右边的那个放进盒子”→ count=2、quantity_mode=candidate_pool，并给出 rightmost selection relation。
+“把所有苹果放进篮子”→ quantity_mode=all。
+“两个棒球”本身不等于 candidate_pool；只有“中/其中/最左/最右/最近/最远/指定关系的那个”等筛选语言才使用 candidate_pool。不要根据执行器能力修改数量。
+
+## 5. 多对象与分别
+“分别/各自/一一对应/respectively”表示 pairwise correspondence，必须保留语言顺序。
+“把苹果和香蕉分别放进红盒和蓝盒”必须表示 apple→red_box、banana→blue_box，不得交换或丢失 destination。
+“把两个苹果分别放进红盒和蓝盒”必须保留苹果总数量2、两个 destination 分别需要不同 apple；不得让同一个苹果同时对应两个 destination。通过 operation 结构尽可能明确表达 correspondence。
+
+多对象语义不等于无条件接受物理不可能的终态。“抓住两个苹果”仍应忠实表达两个对象，是否能同时保持由后续 capability validator 判断；不要把它偷偷降级成抓住一个。
+
+## 6. Operation
+支持 locate/search/move/grasp/release/pick_and_place/press/open/close。operation 是用户的高层目标，不是 Atomic Skill。
+- pick_and_place：source=被搬运对象，destination=容器或目标位置；
+- open/close：target=门或抽屉，reference=对应把手；
+- grasp/press/locate：target=被操作对象；
+- move：target 或 source=被移动对象。
+不得把 pick_and_place 改写为 locate/move/grasp/release。用户描述多个高层目标时保留多个 operation，顺序与用户表达一致。同一集合跨多个阶段时必须复用同一 entity，不得把不同阶段分配给不同成员。
+
+## 7. Direction 与 selector
+motion direction 仅允许 left/right/front/back/up/down；东=right、西=left、北=front、南=back。复合运动方向如“向左上方移动”返回 direction_clarification_required。
+“右边的苹果”是 selection relation=right；“最右边的苹果”是 rightmost；同理区分 left/leftmost、front/frontmost、back/backmost、up/highest、down/lowest。
+二维角落：左上角=left+front，右上角=right+front，左下角=left+back，右下角=right+back；这里上/下是桌面平面的前/后，不是 Z 轴。relation.subject 必须是被修饰 entity。
+一句话可同时包含 selector 和 motion，例如“把左边的棒球向右移动”应同时输出 selection=left 和 operation.motion_direction=right。
+
+## 8. Selection relation
+“离篮子最近的苹果”→ nearest、reference=basket；“离盒子最远的棒球”→ farthest、reference=box。不得创造用户未表达的 relation。
+
+## 9. Scene Edit / Query / Control
+“增加一个香蕉”返回 accepted scene_edit，relation=null、reference=null，不得猜位置；是否澄清由 Python Session 决定。“在篮子右边增加一个香蕉”写 relation=right_of、reference=basket。relation/reference 必须同时存在或同时为 null。“桌子/桌面/台面”可作为 reference。
+scene_query 只描述 count/existence/position/state，不生成 object_id。
+
+## 10. 对话指代
+输入中的 [dialogue_ref=苹果] 是系统注入的稳定单对象指代：建立独立 entity，dialogue_ref=true，不得与同名普通 entity 合并。
+输入中的 [dialogue_ref_set=苹果] 是稳定多对象集合：建立一个集合 entity，dialogue_ref_set=true、quantity_mode=all，不得缩减为其中一个对象。operation 和 relation 可引用该集合。
+
+## 11. 距离
+“向右移动5厘米”必须保留 motion_direction=right、distance_m=0.05；“向右移动一点”保留 direction=right、distance_m=null，由 Python MotionPolicy 决定。多个 move 的方向和距离必须绑定到各自 operation，不得依赖顶层广播。
+
+## 12. 输出忠实性检查
+输出前检查：明确数量是否一致；是否把 count=N 变成1；是否无理由拆成同名 entity；多个同名 entity 是否真有不同角色；是否把多动作对象变成 candidate_pool；分别关系是否保留；operation role 是否遗漏；是否把 selector 当 motion；是否创造 relation；是否删除 operation；是否因执行能力降低原始语义。
+
+## 13. 示例
+A. “将两个棒球放进盒子里”：一个 baseball entity，count=2、quantity_mode=all；一个 pick_and_place，source=baseball、destination=box。
+B. “把两个棒球中最右边那个放进盒子”：baseball count=2、candidate_pool；rightmost selection；一个 pick_and_place。
+C. “把苹果和香蕉分别放进红盒和蓝盒”：apple→red_box，banana→blue_box。
+D. “把两个苹果分别放进红盒和蓝盒”：apple count=2；两个 destination 分别消费不同成员。
+E. “先把两个球向右移动5厘米，再把它们向前移动5厘米”：同一个 ball set；两个 move operation，分别 right/0.05 和 front/0.05。
+F. “打开两个柜门”：door count=2；保留 door 与 handle 语义，物理配对由后续 grounding 完成。
+G. “增加一个香蕉”：scene_edit relation/reference 都为 null。
+
+实体 id 使用简短稳定 snake_case。source/destination/target/reference 必须引用 entities 中的 id。禁止输出 explanation、operation_id、XYZ、object_id、模型信息、Atomic Skill 步骤和 task_types。"""
 
 
 VISION_GROUNDING_PROMPT = """按实体语义返回 RGB 中所有相关候选 bbox。

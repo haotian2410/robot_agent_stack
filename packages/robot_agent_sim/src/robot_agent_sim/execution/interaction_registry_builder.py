@@ -9,6 +9,7 @@ from pathlib import Path
 import mujoco
 
 from ..scene.registry import SceneRegistry
+from .placement_allocator import allocate_interior_slots
 from robot_agent_protocol import scene_sha256
 
 
@@ -93,6 +94,33 @@ def build_generated_registry(
 
         if item.model_name == "open_box":
             common["interactable"] = False
+            # Keep the authored region explicit.  The generated primitive has
+            # 8 mm walls and a thin floor; use a conservative margin so every
+            # slot stays inside the physical cavity.
+            wall = 0.008
+            # Keep only a small geometric margin here.  The wall thickness is
+            # already excluded; using a second 8 mm margin would make the
+            # default 18 cm box reject two ordinary 7 cm balls even though
+            # they fit on its floor.
+            margin = 0.002
+            interior_min = [-(dimensions[0] / 2 - wall - margin), -(dimensions[1] / 2 - wall - margin), wall + margin]
+            interior_max = [dimensions[0] / 2 - wall - margin, dimensions[1] / 2 - wall - margin, dimensions[2] - margin]
+            common["spatial"]["regions"] = {
+                "interior": {
+                    "local_min": interior_min,
+                    "local_max": interior_max,
+                }
+            }
+            # Generate enough deterministic anchors for the largest ordinary
+            # object in this scene.  The compiler still resolves the semantic
+            # region as ``container_interior``; these are execution metadata.
+            source_dimensions = [
+                tuple(value.dimensions_m)
+                for value in scene_registry.objects
+                if value.object_id != item.object_id and value.model_name != "open_box" and value.dimensions_m
+            ]
+            object_dimensions = tuple(max(values[index] for values in source_dimensions) for index in range(3)) if source_dimensions else (0.06, 0.06, 0.06)
+            slots = allocate_interior_slots(interior_min, interior_max, object_dimensions, gap=0.01)
             common["spatial"].update({
                 "default_anchor": "interior",
                 "anchors": {
@@ -100,9 +128,18 @@ def build_generated_registry(
                         "target_id": f"{item.object_id}_interior",
                         "aliases": ["interior", "inside", "内部", "里面"],
                         "local_position": [0.0, 0.0, max(0.02, dimensions[2] * 0.55)],
-                    }
+                    },
                 },
             })
+            for slot in slots:
+                common["spatial"]["anchors"][slot.slot_id] = {
+                    "target_id": f"{item.object_id}_{slot.slot_id}",
+                    "aliases": [slot.slot_id.replace("_", " ")],
+                    # This is an end-effector target, not merely the object's
+                    # floor-centre.  Preserve the proven approach height while
+                    # using the allocator for collision-safe XY separation.
+                    "local_position": [slot.local_position[0], slot.local_position[1], max(slot.local_position[2], dimensions[2] * 0.55)],
+                }
         elif item.model_name == "button_basic":
             common["interactable"] = True
             common["spatial"].update({

@@ -93,8 +93,13 @@ class AssetRegistry:
             r for r in self.records if r.exists()
             and any(label_match(requested, candidate) for requested in exact_labels for candidate in (r.model_name, *r.aliases))
         ]
+        category_fallback = (
+            normalize_name(category) in generic_names
+            and any(token in normalize_name(name) for token in ("盒", "box", "篮", "basket", "容器", "container", "location"))
+        )
         generic_request = (
             normalize_name(name) in generic_names
+            or category_fallback
             if name
             else (not requested_labels or all(normalize_name(value) in generic_names for value in requested_labels))
         )

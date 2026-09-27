@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ def compile_execution_bundle(
     objects = registry["objects"]
     commands: list[SkillCommand] = []
     traces: list[dict[str, Any]] = []
+    placement_assignments: list[dict[str, Any]] = []
 
     current_trace: dict[str, Any] | None = None
 
@@ -93,11 +95,29 @@ def compile_execution_bundle(
                 continue
             spatial = objects[target].get("spatial", {})
             desired = REGION_TO_ANCHOR.get(step.semantic_target or "")
+            if desired == "interior":
+                # ConcreteTaskExpander gives broadcast/pairwise children a
+                # stable ``__NN`` suffix.  Resolve any suffix, not just the
+                # first two historical slots, so three or more objects get
+                # distinct container placements.
+                match = re.search(r"__(\d+)$", step.operation_id)
+                if match:
+                    desired = f"interior_slot_{int(match.group(1))}"
             anchors = spatial.get("anchors", {})
             if desired is not None and desired not in anchors:
+                if desired.startswith("interior_slot_"):
+                    raise ValueError(f"placement_capacity_exceeded: {target}.{desired}")
                 raise ValueError(f"{ErrorCode.ANCHOR_NOT_FOUND}: {target}.{desired}")
             anchor = desired if desired is not None else spatial.get("default_anchor")
             current_trace["resolved_anchor"] = anchor
+            if desired and desired.startswith("interior_slot_"):
+                placement_assignments.append({
+                    "operation_id": step.operation_id,
+                    "target_object": target,
+                    "anchor": anchor,
+                    "local_position": anchors[anchor].get("local_position"),
+                    "allocator": "interior_floor_grid",
+                })
             parameters = {"planning_method": "auto"}
             if anchor:
                 parameters["anchor"] = anchor
@@ -136,6 +156,9 @@ def compile_execution_bundle(
     )
     (output / "compiled_step_trace.json").write_text(
         json.dumps(traces, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    (output / "placement_assignment.json").write_text(
+        json.dumps(placement_assignments, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return bundle
 

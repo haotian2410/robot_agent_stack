@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from ..execution.compiler import compile_directory
+from ..execution.compiler import compile_execution_bundle
+from .batch_executor import slice_skill_plan_for_operation
+from ..contracts.grounded_task import GroundedTask
+from ..contracts.skill_plan import SkillPlan
 from ..execution.session_client import SessionExecutorClient
 from ..pipeline.engine import PipelineEngine, PipelineResult
 from ..models.budget import ModelCallMode
@@ -66,7 +70,7 @@ class SceneSession:
         dialogue_binding = self._dialogue_binding(instruction)
         task_instruction = self._resolve_dialogue_instruction(instruction, dialogue_binding)
         parsed_turn = self.engine.understand_turn(task_instruction)
-        referent_object_id = dialogue_binding.object_id if dialogue_binding else None
+        referent_object_id = dialogue_binding.object_ids[0] if dialogue_binding and len(dialogue_binding.object_ids) == 1 else None
         if parsed_turn.turn_kind == TurnKind.SCENE_QUERY and parsed_turn.scene_query is not None and any(token in instruction for token in ("它", "刚才那个", "这个")):
             parsed_turn.scene_query.referent = True
         if parsed_turn.turn_kind == TurnKind.SCENE_EDIT:
@@ -166,24 +170,95 @@ class SceneSession:
             self.scene_registry = result.scene_registry
             self._build_semantic_map()
             self._initialize_instance_indices()
-        bundle = compile_directory(turn_dir)
-        bundle_path = Path(bundle.task_dir) / "execution_bundle.json"
-        if self.control is None:
-            self.control = SessionExecutorClient(viewer_mode=self.viewer_mode)
-            self.control.open(bundle_path)
-            control_response = self.control.execute(bundle_path)
-        else:
-            control_response = self.control.execute(bundle_path)
-        self.world_version += 1
-        self.world_state = WorldState.model_validate({**control_response["snapshot"], "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
+        control_response, batch_report = self._execute_concrete_operations(result, turn_dir)
         (self.output_root / "state").mkdir(exist_ok=True)
         (self.output_root / "state" / "world_state.json").write_text(self.world_state.model_dump_json(indent=2), encoding="utf-8")
         (self.output_root / "state" / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
         self._record_dialogue(instruction, result)
         self._learn_semantics(result)
-        self.execution_history.append({"turn": self.turn_index, "instruction": instruction, "report": control_response.get("report", {})})
+        self.execution_history.append({"turn": self.turn_index, "instruction": instruction, "report": batch_report})
         self._write_session()
-        return {"status": "accepted", "turn": self.turn_index, "turn_type": "robot_task", "scene_version": self.scene_version, "world_version": self.world_version, "result": result.model_dump(mode="json"), "report": control_response.get("report"), "world_state": self.world_state.model_dump(mode="json")}
+        return {"status": "accepted", "turn": self.turn_index, "turn_type": "robot_task", "scene_version": self.scene_version, "world_version": self.world_version, "result": result.model_dump(mode="json"), "report": batch_report, "world_state": self.world_state.model_dump(mode="json")}
+
+    def _execute_concrete_operations(self, result: PipelineResult, turn_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Execute concrete operations serially in one persistent control session.
+
+        Each operation gets its own compiled bundle and world-state refresh.
+        This keeps the low-level controller single-instance while making the
+        batch boundary explicit and fail-fast.
+        """
+        grounded = GroundedTask.model_validate(result.grounded_task)
+        skill = SkillPlan.model_validate(result.skill_plan)
+        operation_ids = []
+        for step in skill.steps:
+            if step.operation_id not in operation_ids:
+                operation_ids.append(step.operation_id)
+        if not operation_ids:
+            raise ValueError("execution_plan_empty")
+        operation_map = {operation.operation_id: operation for operation in grounded.operations}
+        subtasks = []
+        combined_steps = []
+        for index, operation_id in enumerate(operation_ids, 1):
+            operation = operation_map.get(operation_id)
+            if operation is None:
+                parent = operation_id.split("__", 1)[0]
+                operation = next((value for value in grounded.operations if value.operation_id == parent), None)
+            if operation is None:
+                raise ValueError(f"execution_operation_missing: {operation_id}")
+            sub_skill = slice_skill_plan_for_operation(skill, operation_id)
+            if not sub_skill.steps:
+                continue
+            sub_task = grounded.model_copy(update={"operations": [operation]})
+            sub_dir = turn_dir / "subtasks" / f"{index:04d}"
+            bundle = compile_execution_bundle(
+                sub_skill, sub_task,
+                scene_path=self.scene_path,
+                interaction_registry_path=self.interaction_registry,
+                output_dir=sub_dir,
+                route=result.route,
+                robot=self.robot,
+            )
+            bundle_path = Path(bundle.task_dir) / "execution_bundle.json"
+            if self.control is None:
+                self.control = SessionExecutorClient(viewer_mode=self.viewer_mode)
+                self.control.open(bundle_path)
+            response = self.control.execute(bundle_path)
+            report = response.get("report", {})
+            success = bool(report.get("success", response.get("success", True)))
+            subtasks.append({"operation_id": operation_id, "status": "succeeded" if success else "failed", "report": report, "bundle": str(bundle_path)})
+            combined_steps.extend(report.get("steps", []))
+            self.world_version += 1
+            self.world_state = WorldState.model_validate({**response["snapshot"], "world_version": self.world_version, "scene_version": self.scene_version, "turn_index": self.turn_index})
+            if not success:
+                break
+        completed = sum(item["status"] == "succeeded" for item in subtasks)
+        failed = sum(item["status"] == "failed" for item in subtasks)
+        batch_status = "success" if failed == 0 and completed == len(operation_ids) else "partial_failure"
+        batch = {
+            "status": batch_status,
+            # Keep the legacy execution-report shape at the chat boundary so
+            # callers can consume run and chat results uniformly.
+            "success": batch_status == "success",
+            "total": len(operation_ids),
+            "completed": completed,
+            "failed": failed,
+            "skipped": max(0, len(operation_ids) - completed - failed),
+            "commands_total": sum(item["report"].get("commands_total", 0) for item in subtasks),
+            "commands_completed": sum(item["report"].get("commands_completed", 0) for item in subtasks),
+            "steps": combined_steps,
+            "subtasks": subtasks,
+        }
+        (turn_dir / "batch_execution_report.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+        last = subtasks[-1]["report"] if subtasks else {}
+        combined = dict(last)
+        combined["success"] = batch["status"] == "success"
+        combined["commands_total"] = sum(item["report"].get("commands_total", 0) for item in subtasks)
+        combined["commands_completed"] = sum(item["report"].get("commands_completed", 0) for item in subtasks)
+        combined["steps"] = combined_steps
+        # Preserve the per-turn artifact consumed by existing tooling while
+        # also keeping the new batch report alongside it.
+        (turn_dir / "execution_report.json").write_text(json.dumps(combined, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"snapshot": self.world_state.model_dump(mode="json"), "report": combined}, batch
 
     def _run_scene_edit(self, instruction: str, edit: SceneEditIntent, turn_dir: Path) -> dict[str, Any]:
         if self.origin != "generated" or self.scene_path is None or self.control is None or self.world_state is None:
@@ -355,11 +430,15 @@ class SceneSession:
             grounded_entities = result.grounded_task.get("entities", [])
             for entity in result.grounded_task.get("entities", []):
                 self.dialogue_state.last_grounded_objects[entity["entity_id"]] = entity["object_id"]
-            source_id = next((op.get("source") for op in result.task_intent.get("operations", []) if op.get("source")), None)
-            referent = next((entity for entity in grounded_entities if entity["entity_id"] == source_id), grounded_entities[0] if grounded_entities else None)
-            if referent:
-                object_id = referent["object_id"]
-                self.dialogue_state.referents.update({"它": object_id, "这个": object_id, "刚才那个": object_id})
+            source_id = next((op.get("source") or op.get("target") for op in result.task_intent.get("operations", []) if op.get("source") or op.get("target")), None)
+            referents = [entity for entity in grounded_entities if entity.get("entity_id") == source_id or entity.get("semantic_entity_id") == source_id]
+            if not referents and grounded_entities:
+                referents = [grounded_entities[0]]
+            object_ids = list(dict.fromkeys(entity["object_id"] for entity in referents))
+            if len(object_ids) == 1:
+                self.dialogue_state.referents.update({"它": object_ids[0], "这个": object_ids[0], "刚才那个": object_ids[0]})
+            elif object_ids:
+                self.dialogue_state.referent_sets.update({"它们": object_ids, "这些": object_ids, "刚才那些": object_ids})
         (self.output_root / "state").mkdir(parents=True, exist_ok=True)
         (self.output_root / "state" / "dialogue_state.json").write_text(self.dialogue_state.model_dump_json(indent=2), encoding="utf-8")
 
@@ -386,24 +465,41 @@ class SceneSession:
         (state_dir / "semantic_map.json").write_text(self.semantic_map.model_dump_json(indent=2), encoding="utf-8")
 
     def _dialogue_binding(self, instruction: str) -> DialogueBinding | None:
-        if not any(token in instruction for token in ("它", "刚才那个", "这个")):
+        plural_token = next((token for token in ("刚才那些", "这些", "它们") if token in instruction), None)
+        singular_token = next((token for token in ("刚才那个", "这个", "它") if token in instruction), None)
+        if plural_token is None and singular_token is None:
             return None
-        object_id = self.dialogue_state.referents.get("它") or self.dialogue_state.referents.get("刚才那个")
-        if not object_id:
+        if plural_token is not None:
+            object_ids = self.dialogue_state.referent_sets.get(plural_token) or self.dialogue_state.referent_sets.get("它们")
+        else:
+            object_id = self.dialogue_state.referents.get(singular_token or "它") or self.dialogue_state.referents.get("它")
+            object_ids = [object_id] if object_id else None
+        if not object_ids:
+            # A plural pronoun can refer to a set introduced earlier in the
+            # same turn ("两个球先右移，再把它们前移").  Let the normal
+            # parser preserve that explicit noun phrase; only reject a
+            # genuinely context-free follow-up such as a fresh turn starting
+            # with “把它们…”.
+            if plural_token and any(token in instruction[: instruction.find(plural_token)] for token in ("苹果", "香蕉", "棒球", "球", "方块", "盒子", "篮子")):
+                return None
             raise ValueError("dialogue_binding_unresolved: no prior referent")
-        semantic = self.semantic_map.objects.get(object_id)
+        semantic = self.semantic_map.objects.get(object_ids[0])
         if semantic is None or not semantic.labels:
-            raise ValueError(f"dialogue_binding_unresolved: no semantic label for {object_id}")
+            raise ValueError(f"dialogue_binding_unresolved: no semantic label for {object_ids[0]}")
         label = next(
             (value for value in semantic.labels if any("\u4e00" <= char <= "\u9fff" for char in value)),
-            self._zh_label(re.sub(r"_[0-9]+$", "", object_id)),
+            self._zh_label(re.sub(r"_[0-9]+$", "", object_ids[0])),
         )
-        return DialogueBinding(object_id=object_id, semantic_label=label)
+        return DialogueBinding(object_ids=object_ids, semantic_label=label, plural=len(object_ids) > 1)
 
     def _resolve_dialogue_instruction(self, instruction: str, binding: DialogueBinding | None) -> str:
         if binding is None:
             return instruction
         resolved = instruction
+        if binding.plural:
+            for token in ("刚才那些", "这些", "它们"):
+                resolved = resolved.replace(token, f"[dialogue_ref_set={binding.semantic_label}]")
+            return resolved
         for token in ("刚才那个", "这个", "它"):
             resolved = resolved.replace(token, f"[dialogue_ref={binding.semantic_label}]")
         return resolved

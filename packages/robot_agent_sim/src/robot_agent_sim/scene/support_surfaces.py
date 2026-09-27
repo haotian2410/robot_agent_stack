@@ -17,7 +17,8 @@ class SupportSurface:
 WORK_TABLE = SupportSurface(
     surface_id="__table__",
     body_name="work_table",
-    position=(0.0, 0.0, -0.6),
+    # Public support-contact frame: object positions at z=0 touch the table.
+    position=(0.0, 0.0, 0.0),
     dimensions_m=(0.75, 1.50, 0.03),
 )
 

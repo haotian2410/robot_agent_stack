@@ -31,6 +31,7 @@ class SceneRegistry(BaseModel):
     coordinate_frame: str = "tabletop_center"
     objects: list[SceneObject]
     bindings: dict[str, str] = Field(default_factory=dict)
+    entity_members: dict[str, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def unique_objects(self):
@@ -39,8 +40,13 @@ class SceneRegistry(BaseModel):
         if len(object_ids) != len(set(object_ids)) or len(body_names) != len(set(body_names)):
             raise ValueError("scene object_id and body_name must be unique")
         known = set(object_ids)
+        known_member_ids = known | set(body_names)
         if not set(self.bindings.values()) <= known:
             raise ValueError("scene binding references unknown object")
+        if not all(set(values) <= known_member_ids for values in self.entity_members.values()):
+            raise ValueError("scene entity_members references unknown object")
+        if len({member for values in self.entity_members.values() for member in values}) != sum(len(values) for values in self.entity_members.values()):
+            raise ValueError("scene entity_members must not overlap")
         return self
 
     def by_object_id(self, object_id: str) -> SceneObject:

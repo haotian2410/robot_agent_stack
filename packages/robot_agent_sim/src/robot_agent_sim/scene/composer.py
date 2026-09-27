@@ -15,6 +15,27 @@ MIN_GAP_M = 0.04
 class SceneComposer:
     def compose(self, intent, assets, robot: str = "panda", seed: int = 0) -> SceneRegistry:
         rng = random.Random(seed)
+        # Give generated containers extra floor area only when the user
+        # explicitly asks to place a multi-object set inside them.  Ordinary
+        # single-object scenes retain the authored primitive dimensions and
+        # therefore keep their established spatial coordinates.
+        multi_sources = {
+            entity.entity_id
+            for entity in intent.entities
+            if entity.quantity_mode == QuantityMode.ALL and entity.count > 1
+        }
+        multi_destinations = {
+            operation.destination
+            for operation in intent.operations
+            if operation.destination in multi_sources
+        }
+        for operation in intent.operations:
+            if operation.destination and operation.source in multi_sources:
+                multi_destinations.add(operation.destination)
+        for entity_id in multi_destinations:
+            asset = assets.get(entity_id)
+            if asset is not None and asset.model_name == "open_box" and (asset.dimensions_m is None or asset.dimensions_m[0] < 0.28):
+                assets[entity_id] = asset.model_copy(update={"dimensions_m": (0.28, 0.24, 0.12)})
         ranking_relations = {
             SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
             SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
@@ -30,6 +51,7 @@ class SceneComposer:
         }
         objects: list[SceneObject] = []
         bindings: dict[str, str] = {}
+        entity_members: dict[str, list[str]] = {}
 
         by_entity = {entity.entity_id: entity for entity in intent.entities}
         preferred_by_entity: dict[str, tuple[float, float, float]] = {}
@@ -90,9 +112,13 @@ class SceneComposer:
                         reference_item.position[1],
                         reference_item.position[2],
                     )
-            item = self._make_object(entity, assets[entity_id], 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
-            objects.append(item)
-            bindings[entity.entity_id] = item.object_id
+            count = int(entity.count) if entity.quantity_mode == QuantityMode.ALL else 1
+            members = []
+            for index in range(count):
+                item = self._make_object(entity, assets[entity_id], index + 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
+                objects.append(item); members.append(item.object_id)
+            entity_members[entity.entity_id] = members
+            bindings[entity.entity_id] = members[0]
             placed.add(entity_id)
             placing.discard(entity_id)
 
@@ -133,11 +159,12 @@ class SceneComposer:
                 )
                 objects.append(candidate)
                 candidates.append(candidate)
+            entity_members[entity.entity_id] = [candidate.object_id for candidate in candidates]
             ranked = self._rank_candidates(candidates, reference, relation)
             # Preserve the natural-language selection in the registry.
             bindings[entity.entity_id] = ranked[0].object_id
 
-        return SceneRegistry(scene_id=f"{robot}_generated_{seed}", robot=robot, objects=objects, bindings=bindings)
+        return SceneRegistry(scene_id=f"{robot}_generated_{seed}", robot=robot, objects=objects, bindings=bindings, entity_members=entity_members)
 
     @staticmethod
     def _candidate_ranking_positions(relation, count, reference, dimensions):
@@ -205,6 +232,13 @@ class SceneComposer:
             # not both become scene_object_01.
             base = _slug(entity.entity_id or asset.model_name)
         object_id = f"{base}_{index:02d}"
+        existing_ids = {item.object_id for item in existing}
+        if object_id in existing_ids:
+            object_id = f"{_slug(entity.entity_id)}_{index:02d}"
+            suffix = 2
+            while object_id in existing_ids:
+                object_id = f"{_slug(entity.entity_id)}_{index:02d}_{suffix}"
+                suffix += 1
         return SceneObject(object_id=object_id, body_name=object_id, role="task_object",
                            semantic_name=entity.semantic_name, position=position, dimensions_m=dimensions,
                            entity_id=entity.entity_id if index == 1 else None, candidate_for=entity.entity_id,

@@ -84,7 +84,8 @@ class FakeTaskUnderstandingProvider:
             return TaskParseLLMOutput(status="unsupported_task", raw_task=text)
 
         entities: list[ParseEntity] = []
-        dialogue_match = re.search(r"\[dialogue_ref=([^\]]+)\]", text)
+        dialogue_set_match = re.search(r"\[dialogue_ref_set=([^\]]+)\]", text)
+        dialogue_match = re.search(r"\[dialogue_ref=([^\]]+)\]", text) or dialogue_set_match
         dialogue_label = dialogue_match.group(1).strip() if dialogue_match else None
         dialogue_names = {
             "苹果": ("apple", "fruit"), "apple": ("apple", "fruit"),
@@ -127,14 +128,16 @@ class FakeTaskUnderstandingProvider:
                 return QuantityMode.CANDIDATE_POOL
             return QuantityMode.ALL if count > 1 else QuantityMode.SINGLE
 
-        def add(eid, name, category, color=None, count=1, quantity_mode=QuantityMode.SINGLE, dialogue_ref=False):
+        def add(eid, name, category, color=None, count=1, quantity_mode=QuantityMode.SINGLE, dialogue_ref=False, dialogue_ref_set=False):
             existing = next((entity for entity in entities if entity.id == eid), None)
             if existing is None:
-                entities.append(ParseEntity(id=eid, name=name, category=category, dialogue_ref=dialogue_ref, color=color, count=count, quantity_mode=quantity_mode))
+                entities.append(ParseEntity(id=eid, name=name, category=category, dialogue_ref=dialogue_ref, dialogue_ref_set=dialogue_ref_set, color=color, count=count, quantity_mode=quantity_mode))
             elif dialogue_ref:
                 existing.dialogue_ref = True
+            elif dialogue_ref_set:
+                existing.dialogue_ref_set = True
 
-        if "红" in text or "red" in low:
+        if ("红" in text or "red" in low) and not ("红盒" in text or "red box" in low):
             if "球" in text or "ball" in low:
                 add("red_ball_01", "red ball", "ball", "red")
             else:
@@ -144,12 +147,16 @@ class FakeTaskUnderstandingProvider:
             for token in ("柜门", "上层", "cabinet door", "upper compartment")
         ):
             add("blue_box_01", "blue box", "container", "blue")
+        if ("红盒" in text or "red box" in low):
+            add("red_box_01", "red box", "container", "red")
         if "黄" in text or "yellow" in low: add("yellow_cube_01", "yellow cube", "cube", "yellow")
         if ("球" in text and "棒球" not in text) or re.search(r"\bball\b", low):
             if not any(entity.category == "ball" for entity in entities):
-                add("ball_01", "ball", "ball")
+                ball_count = quantity_for("球") if "球" in text else quantity_for("ball")
+                add("ball_01", "ball", "ball", count=ball_count, quantity_mode=QuantityMode.ALL if ball_count > 1 else QuantityMode.SINGLE)
         if ("盒" in text or "box" in low) and not any(entity.category == "container" for entity in entities):
-            add("open_box_01", "open box", "container", None)
+            box_count = quantity_for("盒子") if "盒子" in text else quantity_for("box")
+            add("open_box_01", "open box", "container", None, count=box_count, quantity_mode=QuantityMode.ALL if box_count > 1 else QuantityMode.SINGLE)
         if "按钮" in text or "button" in low: add("button_01", "button", "button")
         if "柜门" in text or "cabinet door" in low:
             add("cabinet_door_01", "blue cabinet door", "door", "blue")
@@ -170,7 +177,8 @@ class FakeTaskUnderstandingProvider:
                 add(
                     f"{name.replace(' ', '_')}_01", name, category,
                     count=quantity_for(token), quantity_mode=quantity_mode_for(token),
-                    dialogue_ref=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_relative is None),
+                    dialogue_ref=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_relative is None and dialogue_set_match is None),
+                    dialogue_ref_set=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_set_match is not None),
                 )
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
@@ -314,8 +322,22 @@ class FakeTaskUnderstandingProvider:
             operations.append(ParseOperation(type="press", target=letters[2].id))
         if chained:
             return TaskParseLLMOutput(status="accepted", entities=entities, operations=operations, relations=relations)
-        if put:
-            source = next((entity for entity in entities if entity.color == "red"), entities[0])
+        if put and "分别" in text:
+            sources = sorted([e for e in entities if e.category not in {"container", "door", "handle"}], key=lambda e: min((text.find(token) for token in (e.name, {"apple": "苹果", "banana": "香蕉", "baseball": "棒球"}.get(e.name, e.name)) if text.find(token) >= 0), default=10**9))
+            destinations = sorted([e for e in entities if e.category == "container" and e not in sources], key=lambda e: min((text.find(token) for token in (e.name, {"red box": "红盒", "blue box": "蓝盒"}.get(e.name, e.name)) if text.find(token) >= 0), default=10**9))
+            if len(sources) >= 2 and len(destinations) >= 2:
+                operations.extend(ParseOperation(type="pick_and_place", source=sources[i].id, destination=destinations[i].id) for i in range(2))
+            elif sources and (len(destinations) >= 2 or any(destination.count > 1 for destination in destinations)):
+                # A counted homogeneous source is expanded later by the
+                # assignment resolver; retain the two destination roles.
+                if len(destinations) >= 2:
+                    for destination in destinations[:2]:
+                        operations.append(ParseOperation(type="pick_and_place", source=sources[0].id, destination=destination.id))
+                else:
+                    operations.append(ParseOperation(type="pick_and_place", source=sources[0].id, destination=destinations[0].id))
+        elif put:
+            source = next((entity for entity in entities if entity.color == "red"), None)
+            source = source or next((entity for entity in entities if entity.category not in {"container", "door", "handle"}), entities[0])
             destination = next((entity for entity in entities if entity.category == "container" and entity.id != source.id), None)
             if destination is None and len(entities) > 1: destination = entities[1]
             if destination is not None:
@@ -331,6 +353,19 @@ class FakeTaskUnderstandingProvider:
         if any(token in text or token in low for token in ("按", "press")):
             button = next((entity for entity in entities if entity.category == "button"), entities[-1])
             operations.append(ParseOperation(type="press", target=button.id))
+        elif not operations and "再" in text and any(token in text or token in low for token in ("移动", "移到", "move")):
+            # Preserve both phases of a collection motion.  The semantic
+            # expander later broadcasts each phase over the same members.
+            motion_target = entities[0].id
+            directions = []
+            for token, direction in (("向左", "left"), ("向右", "right"), ("向前", "front"), ("向后", "back"), ("向上", "up"), ("向下", "down")):
+                position = text.find(token)
+                if position >= 0:
+                    directions.append((position, direction))
+            directions.sort()
+            distance_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:厘米|cm)", text)
+            distance = float(distance_match.group(1)) / 100.0 if distance_match else None
+            operations.extend(ParseOperation(type="move", target=motion_target, motion_direction=direction, distance_m=distance) for _, direction in directions[:2])
         elif not operations and any(token in text or token in low for token in ("移动", "移到", "move")):
             motion_target = entities[0].id
             if baseball is not None and spatial_selector_subjects and any(token in low for token in ("向右", "向左", "向前", "向后", "向上", "向下")):

@@ -90,6 +90,14 @@ class WorldRelationResolver:
                 if len(tied) != 1:
                     raise RelationAmbiguous(f"grounding_ambiguous: distance tie for {entity_id} {relation.relation}")
                 values = tied
+            # A multi-member ALL set is intentionally grounded as a set by
+            # the pipeline.  This resolver still returns a representative
+            # member for the legacy single-entity contract; the full member
+            # list is preserved in candidate_map/entity_members and expanded
+            # immediately afterwards.
+            entity = next((item for item in intent.entities if item.entity_id == entity_id), None)
+            if entity is not None and getattr(entity.quantity_mode, "value", entity.quantity_mode) == "all" and not relations:
+                values = [sorted(values, key=lambda item: item["object_id"])[0]]
             if len(values) != 1:
                 raise RelationAmbiguous(f"grounding_ambiguous: multiple candidates remain for {entity_id}")
             result = values[0]

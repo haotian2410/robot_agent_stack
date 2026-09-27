@@ -63,7 +63,9 @@ class SceneMutator:
             model_name=asset.model_name,
             source="generated",
         ))
-        updated = registry.model_copy(update={"objects": existing, "bindings": dict(registry.bindings)})
+        members = {key: list(values) for key, values in registry.entity_members.items()}
+        members.setdefault(semantic_name, []).append(object_id)
+        updated = registry.model_copy(update={"objects": existing, "bindings": dict(registry.bindings), "entity_members": members})
         records = {record.model_id: record for record in self.assets.records}
         object_assets = {item.object_id: records[item.model_id] for item in updated.objects if item.model_id in records}
         if len(object_assets) != len(updated.objects):
@@ -79,7 +81,7 @@ class SceneMutator:
         remaining = [item.model_copy(update={"position": current_positions.get(item.object_id, item.position)}) for item in registry.objects if item.object_id != object_id]
         if len(remaining) == len(registry.objects):
             raise ValueError(f"scene edit object not found: {object_id}")
-        updated = registry.model_copy(update={"objects": remaining, "bindings": {k: v for k, v in registry.bindings.items() if v != object_id}})
+        updated = registry.model_copy(update={"objects": remaining, "bindings": {k: v for k, v in registry.bindings.items() if v != object_id}, "entity_members": {k: [value for value in values if value != object_id] for k, values in registry.entity_members.items()}})
         records = {record.model_id: record for record in self.assets.records}
         object_assets = {item.object_id: records[item.model_id] for item in updated.objects if item.model_id in records}
         out = Path(output_dir).resolve()

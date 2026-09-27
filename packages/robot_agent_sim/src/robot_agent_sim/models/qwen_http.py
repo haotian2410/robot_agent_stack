@@ -49,7 +49,7 @@ class QwenHTTPProvider:
         if self.use_structured_output not in {"json_schema", "json_object", "off"}:
             raise ValueError("structured output mode must be json_schema, json_object, or off")
 
-    def _call(self, stage: str, prompt: str, user_content: str | list[dict[str, Any]]) -> str:
+    def _call(self, stage: str, prompt: str, user_content: str | list[dict[str, Any]], *, max_completion_tokens: int | None = None) -> str:
         response = None
         try:
             if self.use_structured_output in {"json_object", "off"}:
@@ -58,7 +58,7 @@ class QwenHTTPProvider:
             payload = {"model": self.model, "temperature": config.temperature if config else 0, "messages": [
                 {"role": "system", "content": prompt}, {"role": "user", "content": user_content}
             ]}
-            max_tokens = config.max_completion_tokens if config else self.stage_max_completion_tokens.get(stage)
+            max_tokens = config.max_completion_tokens if config else (max_completion_tokens or self.stage_max_completion_tokens.get(stage))
             if max_tokens is not None:
                 payload["max_completion_tokens"] = max_tokens
             # OpenAI-compatible Qwen servers that implement guided JSON accept
@@ -140,7 +140,9 @@ class QwenHTTPProvider:
             "initial_state": request.context.initial_state.model_dump(mode="json"),
             "skills": request.skill_catalog,
         })
-        raw_text = self._call("skill_planning", SKILL_PLANNING_PROMPT, content)
+        operation_count = len(request.context.operations)
+        dynamic_budget = min(4096, 512 + 192 * max(operation_count, 1))
+        raw_text = self._call("skill_planning", SKILL_PLANNING_PROMPT, content, max_completion_tokens=dynamic_budget)
         raw_value = json.loads(raw_text)
         self.last_raw_values["skill_planning"] = raw_value
         return SkillPlanLLMOutput.model_validate(raw_value)
