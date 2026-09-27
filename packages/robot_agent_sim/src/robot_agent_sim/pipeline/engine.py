@@ -33,6 +33,8 @@ from ..planning.recipe_planner import RecipePlanner
 from ..planning.semantic_validator import validate_semantic_plan
 from ..planning.task_expander import expand_grounded_task
 from ..scene.composer import SceneComposer
+from ..scene.support_surfaces import WORK_TABLE, WORKSPACE_X, WORKSPACE_Y
+from ..semantics.placement_normalizer import TABLE_ENTITY
 from ..scene.constraints import SceneConstraintError, validate_generated_scene
 from ..skills.registry import REGISTRY
 
@@ -144,7 +146,8 @@ class PipelineEngine:
             ground_entities = [entity for entity in intent.entities if entity.entity_id not in explicit_entity_ids]
 
             if scene is None and current_registry is None:
-                assets = AssetResolver(self.assets).resolve_entities(intent.entities)
+                asset_entities = [entity for entity in intent.entities if entity.entity_id != TABLE_ENTITY and entity.category != "support_surface"]
+                assets = AssetResolver(self.assets).resolve_entities(asset_entities)
                 registry = SceneComposer().compose(intent, assets, robot, seed)
                 validate_generated_scene(intent, registry)
                 xml_path = self.backend.compose(registry, assets, out)
@@ -154,12 +157,24 @@ class PipelineEngine:
                 observation = self.backend.renderer.render(xml_path, registry, out)
                 grounded = []
                 for entity in intent.entities:
+                    if entity.entity_id == TABLE_ENTITY or entity.category == "support_surface":
+                        grounded.append(GroundedEntity(
+                            entity_id=entity.entity_id,
+                            semantic_name=entity.semantic_name,
+                            object_id=TABLE_ENTITY,
+                            body_name=WORK_TABLE.body_name,
+                            category=entity.category,
+                            aliases=entity.aliases,
+                            quantity_mode=entity.quantity_mode,
+                            grounding_method="asset_scene_binding",
+                        ))
+                        continue
                     object_id = registry.bindings.get(entity.entity_id)
                     if object_id is None: raise ValueError(f"no selected object for entity {entity.entity_id}")
                     item = registry.by_object_id(object_id)
                     instance = next(instance for instance in observation.instances if instance.object_id == object_id)
                     grounded.append(GroundedEntity(entity_id=entity.entity_id, semantic_name=entity.semantic_name, object_id=object_id, body_name=item.body_name, model_id=item.model_id, model_name=item.model_name, category=entity.category, color=entity.color, aliases=entity.aliases, quantity_mode=entity.quantity_mode, grounding_method="asset_scene_binding", instance_bbox=instance.bbox))
-                asset_bindings = {entity.entity_id: {"model_id": assets[entity.entity_id].model_id, "model_name": assets[entity.entity_id].model_name} for entity in intent.entities}
+                asset_bindings = {entity.entity_id: {"model_id": assets[entity.entity_id].model_id, "model_name": assets[entity.entity_id].model_name} for entity in asset_entities}
             else:
                 registry = current_registry or self.backend.load_uploaded(Path(scene), robot)
                 observation = live_observation or self.backend.renderer.render(Path(scene), registry, out)
@@ -592,7 +607,14 @@ class PipelineEngine:
                 task_type = operation.get("task_type")
                 subject = operation.get("source") or operation.get("target")
                 reference = operation.get("destination") or operation.get("reference")
-                inferred = {"pick_and_place": "inside", "grasp": "held", "release": "not_held", "open": "open", "close": "closed"}.get(task_type)
+                placement = operation.get("placement_target") or {}
+                inferred = {
+                    "container_interior": "inside",
+                    "support_surface": "on",
+                    "relative_object": placement.get("relation"),
+                    "free_space": "on",
+                }.get(placement.get("kind")) if task_type == "pick_and_place" and placement else None
+                inferred = inferred or {"pick_and_place": "inside", "grasp": "held", "release": "not_held", "open": "open", "close": "closed"}.get(task_type)
                 if inferred and subject:
                     key = (inferred, subject, reference)
                     if key in goal_condition_keys:

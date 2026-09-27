@@ -135,6 +135,12 @@ class ControlSession:
             mujoco.mj_forward(runtime.model, runtime.data)
             objects: dict[str, Any] = {}
             for object_id, item in self.registry.objects.items():
+                # ``__table__`` is a semantic support frame used by the
+                # planner, not a task object.  Keep it in the interaction
+                # registry so anchors can resolve, but do not expose the
+                # static work-table body as a movable world-state object.
+                if object_id == "__table__":
+                    continue
                 body_name = item.get("body_name")
                 body_id = mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(body_name)) if body_name else -1
                 if body_id < 0:
@@ -197,6 +203,8 @@ class ControlSession:
         imageio.imwrite(segmentation_visualization_path, segmentation[:, :, :3].astype(np.uint8))
         instances = []
         for object_id, item in self.registry.objects.items():
+            if object_id == "__table__":
+                continue
             body_name = item.get("body_name")
             body_id = mujoco.mj_name2id(runtime.model, mujoco.mjtObj.mjOBJ_BODY, str(body_name)) if body_name else -1
             if body_id < 0:

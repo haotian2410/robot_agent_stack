@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ..contracts.task_intent import Operation, QuantityMode, SpatialRelationType, TaskType
+from ..contracts.placement import PlacementTargetKind, PlacementTargetSpec
 from ..contracts.turn import (
     SceneEditIntent, SceneEditRelation, SceneEditType, SceneQueryIntent, SceneQueryType,
     SessionControlIntent, SessionControlType, TurnKind,
@@ -181,6 +182,8 @@ class FakeTaskUnderstandingProvider:
                     dialogue_ref=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_relative is None and dialogue_set_match is None),
                     dialogue_ref_set=bool(dialogue_spec and dialogue_spec[0] == name and dialogue_set_match is not None),
                 )
+        if any(token in text or token in low for token in ("桌面", "桌上", "台面", "table", "架子", "shelf", "空位置", "空地方", "空位", "free space")):
+            add("__table__", "table", "support_surface")
         if "螺丝" in text or "screw" in low:
             add("screw_01", "screw", "screw")
         for label in ("a", "b", "c"):
@@ -192,7 +195,7 @@ class FakeTaskUnderstandingProvider:
         if not entities: add("target_01", "target object", "cube")
 
         relations: list[ParseRelation] = []
-        put = any(token in text for token in ("放进", "放入", "放到", "放在")) or "put" in low
+        put = any(token in text for token in ("放进", "放入", "放到", "放在", "空位置", "空地方", "空位")) or "put" in low
         has_left = any(token in low for token in ("左", "西", "left", "west"))
         has_right = any(token in low for token in ("右", "东", "right", "east"))
         pure_motion = any(token in low for token in ("向左", "向右", "向前", "向后", "向上", "向下", "往左", "往右", "往前", "往后", "往上", "往下", "move left", "move right", "move front", "move back", "move up", "move down"))
@@ -338,12 +341,24 @@ class FakeTaskUnderstandingProvider:
                     operations.append(ParseOperation(type="pick_and_place", source=sources[0].id, destination=destinations[0].id))
         elif put:
             source = next((entity for entity in entities if entity.color == "red"), None)
-            source = source or next((entity for entity in entities if entity.category not in {"container", "door", "handle"}), entities[0])
-            destination = next((entity for entity in entities if entity.category == "container" and entity.id != source.id), None)
-            if destination is None and len(entities) > 1: destination = entities[1]
+            source = source or next((entity for entity in entities if entity.category not in {"container", "door", "handle", "support_surface"}), entities[0])
+            if any(token in text or token in low for token in ("桌面", "桌上", "台面", "table", "架子", "shelf")):
+                destination = next((entity for entity in entities if entity.id == "__table__"), None)
+            else:
+                destination = next((entity for entity in entities if entity.category == "container" and entity.id != source.id), None)
+            if destination is None and len(entities) > 1: destination = next((entity for entity in entities if entity.id != source.id), None)
             if destination is not None:
-                if destination.category != "container" and has_right:
-                    operations.append(ParseOperation(type="move", target=source.id, reference=destination.id))
+                if destination.category != "container":
+                    relation = (
+                        SpatialRelationType.RIGHT_OF if has_right else
+                        SpatialRelationType.LEFT_OF if has_left else
+                        SpatialRelationType.FRONT_OF if "前面" in text or "前方" in text else
+                        SpatialRelationType.BEHIND if "后面" in text or "后方" in text else
+                        SpatialRelationType.NEAR if any(token in text for token in ("旁边", "附近")) else None
+                    )
+                    operations.append(ParseOperation(type="pick_and_place", source=source.id, destination=destination.id))
+                    if relation is not None:
+                        relations.append(ParseRelation(scope="goal", subject=source.id, relation=relation, reference=destination.id))
                 else:
                     operations.append(ParseOperation(type="pick_and_place", source=source.id, destination=destination.id))
                     relations.append(ParseRelation(scope="goal", subject=source.id, relation=SpatialRelationType.INSIDE, reference=destination.id))
@@ -381,6 +396,11 @@ class FakeTaskUnderstandingProvider:
             operations.append(ParseOperation(type="grasp", target=entities[0].id))
         elif not operations and any(token in text or token in low for token in ("释放", "放开", "release")):
             operations.append(ParseOperation(type="release", target=entities[0].id))
+        if not operations and any(token in text or token in low for token in ("空位置", "空地方", "空位", "free space", "empty place")):
+            source = next((entity for entity in entities if entity.category != "support_surface"), None)
+            destination = next((entity for entity in entities if entity.id == "__table__"), None)
+            if source is not None and destination is not None:
+                operations.append(ParseOperation(type="pick_and_place", source=source.id, destination=destination.id))
         if not operations:
             return TaskParseLLMOutput(status="unsupported_task", raw_task=text)
         motion_direction = None

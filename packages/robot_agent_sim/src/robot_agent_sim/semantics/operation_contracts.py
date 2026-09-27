@@ -35,6 +35,9 @@ def validate_operation_contract(operation) -> None:
         raise ValueError(f"task_semantic_invalid: {task_type} requires exactly one of target or source")
     if task_type == "pick_and_place" and operation.source == operation.destination:
         raise ValueError("task_semantic_invalid: pick_and_place source and destination must differ")
+    if task_type == "pick_and_place" and operation.placement_target is not None:
+        if operation.placement_target.reference != operation.destination:
+            raise ValueError("task_semantic_invalid: placement reference must match destination")
     if task_type in {"open", "close"} and operation.target == operation.reference:
         raise ValueError(f"task_semantic_invalid: {task_type} target and reference must differ")
     if task_type != "move" and (operation.motion_direction is not None or operation.distance_m is not None):

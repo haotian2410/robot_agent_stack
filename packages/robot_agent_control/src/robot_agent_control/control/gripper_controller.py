@@ -45,12 +45,12 @@ class MujocoGripperController:
             raise ValueError(f"MuJoCo gripper object not found: {name}")
         return object_id
 
-    def open(self, width: float, *, speed: float = 0.5, timeout: float = 5.0) -> dict[str, Any]:
+    def open(self, width: float, *, speed: float = 0.5, timeout: float = 5.0, target_object_id: str | None = None) -> dict[str, Any]:
         self._holding = False
         self._commanded_force = 0.0
         released_joint_id = None if self._held_body_id is None else int(self.model.body_jntadr[self._held_body_id])
         released_joint_type = self._held_joint_type
-        result = self._move(width, speed=speed, timeout=timeout, target_object_id=None, stop_on_contact=False)
+        result = self._move(width, speed=speed, timeout=timeout, target_object_id=target_object_id, stop_on_contact=False)
         self._detach_object()
         if released_joint_id is not None and released_joint_type == mujoco.mjtJoint.mjJNT_FREE:
             dof_address = int(self.model.jnt_dofadr[released_joint_id])
@@ -75,7 +75,11 @@ class MujocoGripperController:
             target_object_id=target_object_id,
             stop_on_contact=True,
         )
-        if result["contact_detected"]:
+        # A single pad touching the payload is not a grasp.  The close loop
+        # reports contact only after both opposing pads have evidence, so an
+        # object cannot be attached (and later reported as held) while it is
+        # merely wedged against one finger or a nearby container wall.
+        if result["contact_detected"] and self._target_bilateral_contact(target_object_id):
             self._attach_object(target_object_id)
         result["force"] = self._commanded_force if result["contact_detected"] else 0.0
         return result
@@ -88,7 +92,7 @@ class MujocoGripperController:
         return self.open(self.maximum_width if width is None else width, timeout=timeout)
 
     def get_state(self, target_object_id: str | None = None) -> dict[str, Any]:
-        contact = self._target_contact(target_object_id)
+        contact = self._target_bilateral_contact(target_object_id)
         held = self._target_is_held(target_object_id)
         return {
             "known": True,
@@ -120,6 +124,7 @@ class MujocoGripperController:
         start_ctrl = float(self.data.ctrl[self.actuator_id])
         locked_arm_qpos = self.data.qpos[self.runtime.qpos_indices].copy()
         locked_target = self._constrained_target_lock(target_object_id)
+        locked_payload = self._free_target_lock(target_object_id)
         duration = max(abs(final_ctrl - start_ctrl) / 255.0 / max(float(speed), 0.05), 0.05)
         start = time.perf_counter()
         contact = False
@@ -135,6 +140,10 @@ class MujocoGripperController:
                 if locked_target is not None:
                     self.data.qpos[locked_target[0]] = locked_target[2]
                     self.data.qvel[locked_target[1]] = 0.0
+                if locked_payload is not None:
+                    qpos_address, dof_address, qpos = locked_payload
+                    self.data.qpos[qpos_address : qpos_address + 7] = qpos
+                    self.data.qvel[dof_address : dof_address + 6] = 0.0
                 mujoco.mj_forward(self.model, self.data)
                 if self._held_body_id is not None:
                     # A grasp is represented by a temporary kinematic attachment.
@@ -145,10 +154,10 @@ class MujocoGripperController:
                         self.sync_held_object()
                     else:
                         self._detach_object()
-            contact = self._target_contact(target_object_id)
+            contact = self._target_bilateral_contact(target_object_id)
             if self.runtime.viewer is not None:
                 self.runtime.viewer.sync()
-            if stop_on_contact and contact:
+            if stop_on_contact and self._target_bilateral_contact(target_object_id):
                 break
             if alpha >= 1.0:
                 break
@@ -176,6 +185,28 @@ class MujocoGripperController:
         qpos_address = int(self.model.jnt_qposadr[joint_id])
         dof_address = int(self.model.jnt_dofadr[joint_id])
         return qpos_address, dof_address, float(self.data.qpos[qpos_address])
+
+    def _free_target_lock(self, target_object_id: str | None) -> tuple[int, int, np.ndarray] | None:
+        """Hold a free payload at its approach pose while fingers close.
+
+        The arm is kinematic in this adapter, but free payloads still receive
+        gravity/contact impulses during the gripper's opening/closing steps.
+        Without this short lock an object inside a box can drift or bounce
+        before the first contact sample, producing a misleading grasp failure.
+        The lock is released immediately after the close call, when a
+        bilateral contact either attaches the payload or correctly fails.
+        """
+        body_id = self._target_body_id(target_object_id)
+        if body_id is None:
+            return None
+        joint_id = int(self.model.body_jntadr[body_id])
+        if joint_id < 0 or self.model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_FREE:
+            return None
+        return (
+            int(self.model.jnt_qposadr[joint_id]),
+            int(self.model.jnt_dofadr[joint_id]),
+            self.data.qpos[int(self.model.jnt_qposadr[joint_id]) : int(self.model.jnt_qposadr[joint_id]) + 7].copy(),
+        )
 
     def _hold_arm_pose(self) -> None:
         actuator_ids = getattr(self.runtime, "actuator_ids", None)
@@ -273,6 +304,41 @@ class MujocoGripperController:
             if body2 == target_body and name1.startswith("robotiq_2f85") and "pad" in name1:
                 return True
         return False
+
+    def _target_bilateral_contact(self, target_object_id: str | None) -> bool:
+        """Return true only when both opposing finger pads touch the target.
+
+        MuJoCo exposes a contact as soon as one pad reaches an object.  Using
+        that event as the grasp stop condition lets the controller attach a
+        payload off-centre and is the source of many ``contact_detected`` /
+        ``holding`` mismatches.  Treating left and right pad contact as the
+        minimum physical evidence keeps the success result honest.
+        """
+        if not target_object_id:
+            return False
+        target_body = self._target_body_id(target_object_id)
+        if target_body is None:
+            return False
+        sides: set[str] = set()
+        for index in range(self.data.ncon):
+            contact = self.data.contact[index]
+            body1 = int(self.model.geom_bodyid[contact.geom1])
+            body2 = int(self.model.geom_bodyid[contact.geom2])
+            pad_body = None
+            if body1 == target_body:
+                pad_body = body2
+            elif body2 == target_body:
+                pad_body = body1
+            if pad_body is None:
+                continue
+            pad_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, pad_body) or ""
+            if not (pad_name.startswith("robotiq_2f85") and "pad" in pad_name):
+                continue
+            if "left" in pad_name:
+                sides.add("left")
+            elif "right" in pad_name:
+                sides.add("right")
+        return sides == {"left", "right"}
 
     def _held_object_has_gripper_contact(self) -> bool:
         """Return whether the currently attached payload still touches a finger pad."""

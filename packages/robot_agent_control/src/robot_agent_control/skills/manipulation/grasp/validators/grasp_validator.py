@@ -71,6 +71,7 @@ class GraspValidator:
         """Verify and normalize contact, object-presence and holding evidence."""
         contact = bool(raw_result.get("contact_detected", False))
         present = bool(raw_result.get("object_present", False))
+        holding = bool(raw_result.get("holding", False))
         slip = bool(raw_result.get("slip_detected", False))
         force = float(raw_result.get("final_force", 0.0))
         if force > float(request["constraints"]["maximum_force"]) + 1e-9:
@@ -82,22 +83,29 @@ class GraspValidator:
             self._fail("No target contact was detected.", ErrorCode.CONTACT_NOT_DETECTED, "verification", True)
         if verify and request["target"]["type"] == "object" and not present:
             self._fail("Target presence could not be confirmed between the fingers.", ErrorCode.GRASP_VERIFICATION_FAILED, "verification", True)
+        if verify and request["target"]["type"] == "object" and not holding:
+            self._fail(
+                "The gripper reported contact but no stable holding evidence.",
+                ErrorCode.GRASP_VERIFICATION_FAILED,
+                "verification",
+                True,
+            )
         expected_width = request["target"].get("expected_width")
         width_ok = True
         if expected_width is not None and contact:
             tolerance = max(float(raw_result.get("parameters", {}).get("position_tolerance", 0.002)), 0.005)
             width_ok = abs(float(raw_result["final_width"]) - float(expected_width)) <= tolerance
-        verified = (not verify) or (contact and present and not slip and width_ok)
+        verified = (not verify) or (contact and present and holding and not slip and width_ok)
         if verify and not verified:
             self._fail("Grasp evidence did not satisfy width/contact verification.", ErrorCode.GRASP_VERIFICATION_FAILED, "verification", True)
         if not all(math.isfinite(float(raw_result.get(k, 0.0))) for k in ("final_width", "final_force", "execution_time")):
             self._fail("Grasp result contains non-finite values.", ErrorCode.GRIPPER_EXECUTION_ERROR, "verification", False)
         return {
-            "grasped": bool(contact and present),
+            "grasped": bool(contact and present and holding),
             "contact_detected": contact,
             "final_width": float(raw_result.get("final_width", 0.0)),
             "final_force": force,
-            "holding": bool(raw_result.get("holding", False)),
+            "holding": holding,
             "verified": verified,
             "verification_method": "contact_position" if verify else "disabled",
             "slip_detected": slip,

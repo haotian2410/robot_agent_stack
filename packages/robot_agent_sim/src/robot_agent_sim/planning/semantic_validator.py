@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
+from ..contracts.placement import PlacementTargetKind
 from ..skills.registry import AtomicSkillRegistry, REGISTRY
 from .context_builder import PlannerContext
 
@@ -17,6 +18,14 @@ class SemanticEvent:
     target: str | None
     reference: str | None
     region: str | None
+
+
+@dataclass(frozen=True)
+class ReachedPlacement:
+    source_entity: str
+    host_entity: str
+    kind: PlacementTargetKind
+    relation: str | None
 
 
 def validate_semantic_plan(
@@ -45,6 +54,7 @@ def _validate(plan, task, context, skill_registry) -> None:
     operation_events: dict[str, list[SemanticEvent]] = {operation_id: [] for operation_id in operation_ids}
     operation_initial_held: dict[str, str | None] = {}
     operation_reached: dict[str, set[tuple[str, str | None]]] = {operation_id: set() for operation_id in operation_ids}
+    operation_placements: dict[str, set[ReachedPlacement]] = {operation_id: set() for operation_id in operation_ids}
 
     located: set[str] = set()
     reached: set[tuple[str, str | None]] = set()
@@ -66,12 +76,13 @@ def _validate(plan, task, context, skill_registry) -> None:
             source_initially_held = operation_initial_held.get(operation_id) == operation.source
             grasped_source = any(event.skill == "grasp" and event.target == operation.source for event in events)
             valid_release = False
+            placement = operation.placement_target
             for event in events:
                 if not (
                     event.skill == "release"
                     and event.target == operation.source
                     and event.reference == destination
-                    and event.region == "container_interior"
+                    and event.region in {"placement_region", "container_interior", "support_surface", "relative_region", "semantic_region"}
                 ):
                     continue
                 preceding_moves = [
@@ -82,11 +93,35 @@ def _validate(plan, task, context, skill_registry) -> None:
                 if (
                     last_move is not None
                     and last_move.target == destination
-                    and last_move.region == "container_interior"
+                    and last_move.region in {"placement_region", "container_interior", "support_surface", "relative_region", "semantic_region"}
                 ):
                     valid_release = True
                     break
-            if (not source_initially_held and not grasped_source) or not valid_release or (destination, "container_interior") not in reached_for_operation:
+            if placement is not None:
+                expected_host = placement.reference or placement.support or destination or ""
+                expected_relation = placement.relation.value if placement.relation else None
+                placement_reached = any(
+                    reached.source_entity == (operation.source or operation.target or "")
+                    and reached.host_entity == expected_host
+                    and reached.kind == placement.kind
+                    and reached.relation == expected_relation
+                    for reached in operation_placements[operation_id]
+                )
+            else:
+                # Legacy callers may construct an Operation without the new
+                # PlacementTargetSpec and rely on an explicit goal relation.
+                # The recipe still emits the neutral placement_region name;
+                # accept that semantic region (and the historical concrete
+                # names) without weakening the ordered move->release checks
+                # above.
+                placement_reached = any(
+                    (destination, region) in reached_for_operation
+                    for region in {
+                        "placement_region", "container_interior", "support_surface",
+                        "relative_region", "semantic_region",
+                    }
+                )
+            if (not source_initially_held and not grasped_source) or not valid_release or not placement_reached:
                 raise ValueError("pick_and_place operation outcome is incomplete")
             if held_state == operation.source:
                 raise ValueError("pick_and_place operation did not release source")
@@ -171,11 +206,21 @@ def _validate(plan, task, context, skill_registry) -> None:
             if target not in located:
                 raise ValueError(f"move requires located target: {target}")
             region = step.semantic_target
-            if region in {"grasp_region", "container_interior", "button_surface"}:
+            if region in {"grasp_region", "container_interior", "support_surface", "button_surface"}:
                 if target_facts is None or region not in target_facts.regions:
                     raise ValueError(f"target {target} has no semantic region {region}")
             reached.add((target, region))
             operation_reached[step.operation_id].add((target, region))
+            if region == "placement_region":
+                operation = next(item for item in task.operations if item.operation_id == step.operation_id)
+                spec = operation.placement_target
+                if spec is not None:
+                    operation_placements[step.operation_id].add(ReachedPlacement(
+                        source_entity=operation.source or operation.target or "",
+                        host_entity=spec.reference or operation.destination or "",
+                        kind=spec.kind,
+                        relation=spec.relation.value if spec.relation else None,
+                    ))
             if region == "relative_motion" and held != target:
                 raise ValueError(f"relative_motion requires held target: {target}")
         elif step.skill_name == "grasp":

@@ -34,6 +34,7 @@ class PlannerOperation(_StrictModel):
     depends_on: list[str] = Field(default_factory=list)
     motion_direction: str | None = None
     distance_m: float | None = None
+    placement_target: dict[str, Any] | None = None
 
 
 class PlannerGoal(_StrictModel):
@@ -115,6 +116,7 @@ def build_planner_context(
         depends_on=list(operation.depends_on),
         motion_direction=operation.motion_direction.value if operation.motion_direction else None,
         distance_m=operation.distance_m,
+        placement_target=operation.placement_target.model_dump(mode="json") if operation.placement_target else None,
     ) for operation in task.operations]
     goals = [PlannerGoal(
         relation=relation.relation.value,
@@ -163,6 +165,8 @@ def _semantic_capabilities(metadata: dict[str, Any], category: str) -> tuple[tup
         affordances.add("pushable")
     if "interior" in anchors or category == "location":
         affordances.add("placeable")
+    if "support_surface" in anchors or category == "support_surface":
+        affordances.add("placeable")
 
     regions = set()
     if "grasp" in anchors or "graspable" in affordances:
@@ -171,6 +175,8 @@ def _semantic_capabilities(metadata: dict[str, Any], category: str) -> tuple[tup
         regions.add("container_interior")
     if "button_surface" in anchors or "pressable" in affordances:
         regions.add("button_surface")
+    if "support_surface" in anchors or category == "support_surface":
+        regions.add("support_surface")
 
     # Visual-grounding Route B may have no authored sidecar.  Use only the
     # grounded semantic category as a conservative fallback.
@@ -181,6 +187,8 @@ def _semantic_capabilities(metadata: dict[str, Any], category: str) -> tuple[tup
             affordances.add("pressable"); regions.add("button_surface")
         elif category in {"location", "container", "box", "basket"}:
             affordances.add("placeable"); regions.add("container_interior")
+        elif category == "support_surface":
+            affordances.add("placeable"); regions.add("support_surface")
     return tuple(sorted(affordances)), tuple(sorted(regions))
 
 

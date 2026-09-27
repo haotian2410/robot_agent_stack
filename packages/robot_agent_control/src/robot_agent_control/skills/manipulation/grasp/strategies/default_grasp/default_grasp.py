@@ -36,7 +36,12 @@ class DefaultGrasp:
             state = controller.get_state(request["target"].get("object_id"))
         else:
             if operation == "grasp":
-                controller.open(params["open_width"], speed=params["close_speed"], timeout=request["constraints"]["timeout"])
+                controller.open(
+                    params["open_width"],
+                    speed=params["close_speed"],
+                    timeout=request["constraints"]["timeout"],
+                    target_object_id=request["target"].get("object_id"),
+                )
             close_result = controller.close(
                 params["close_width"], speed=params["close_speed"],
                 force=params["grasp_force"], timeout=request["constraints"]["timeout"],

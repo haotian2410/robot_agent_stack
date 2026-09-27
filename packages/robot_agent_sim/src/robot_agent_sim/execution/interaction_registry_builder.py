@@ -9,6 +9,7 @@ from pathlib import Path
 import mujoco
 
 from ..scene.registry import SceneRegistry
+from ..scene.support_surfaces import WORK_TABLE, WORKSPACE_X, WORKSPACE_Y
 from .placement_allocator import allocate_interior_slots
 from robot_agent_protocol import scene_sha256
 
@@ -111,6 +112,12 @@ def build_generated_registry(
                     "local_max": interior_max,
                 }
             }
+            # Generated open meshes have a small, explicit allowance for
+            # irregular/curved payloads whose axis-aligned bbox protrudes a
+            # few centimetres while their actual contact footprint is safely
+            # supported by the cavity.  Authored registries do not receive
+            # this policy implicitly.
+            common["spatial"]["placement_policy"] = {"max_overhang_m": 0.05}
             # Generate enough deterministic anchors for the largest ordinary
             # object in this scene.  The compiler still resolves the semantic
             # region as ``container_interior``; these are execution metadata.
@@ -120,7 +127,7 @@ def build_generated_registry(
                 if value.object_id != item.object_id and value.model_name != "open_box" and value.dimensions_m
             ]
             object_dimensions = tuple(max(values[index] for values in source_dimensions) for index in range(3)) if source_dimensions else (0.06, 0.06, 0.06)
-            slots = allocate_interior_slots(interior_min, interior_max, object_dimensions, gap=0.01)
+            slots = allocate_interior_slots(interior_min, interior_max, object_dimensions, gap=0.01, max_overhang=0.05)
             common["spatial"].update({
                 "default_anchor": "interior",
                 "anchors": {
@@ -259,6 +266,42 @@ def build_generated_registry(
                 },
             }
         objects[item.object_id] = common
+
+    # The generated MJCF always contains one public tabletop body even though
+    # it is not a task asset.  Expose it as a synthetic semantic support
+    # surface so planning and live placement can use the same registry path.
+    table_position = [float(value) for value in WORK_TABLE.position]
+    objects["__table__"] = {
+        "object_id": "__table__",
+        "body_name": WORK_TABLE.body_name,
+        "semantic_name": "table",
+        "category": "support_surface",
+        "aliases": ["table", "桌子", "桌面", "台面", "work_table"],
+        "spatial": {
+            "source": {"type": "body", "name": WORK_TABLE.body_name},
+            "reference_pose": {"position": table_position, "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0]},
+            "directions_local": DIRECTIONS,
+            "default_distances": DEFAULT_DISTANCES,
+            "tool_orientation": TOOL_ORIENTATION,
+            "regions": {
+                "support_surface": {
+                    "local_min": [WORKSPACE_X[0], WORKSPACE_Y[0], 0.0],
+                    "local_max": [WORKSPACE_X[1], WORKSPACE_Y[1], 0.0],
+                }
+            },
+            "default_anchor": "support_surface",
+            "anchors": {
+                "support_surface": {
+                    "target_id": "__table___support_surface",
+                    "aliases": ["support surface", "桌面", "台面"],
+                    "local_position": [0.0, 0.0, 0.0],
+                }
+            },
+        },
+        "interactable": False,
+        "default_interactions": {},
+        "action_requests": {},
+    }
 
     result = {
         "version": 2,

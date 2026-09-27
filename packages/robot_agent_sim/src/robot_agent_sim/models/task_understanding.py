@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..contracts.task_intent import Direction, Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
 from ..contracts.turn import SceneEditIntent, SceneQueryIntent, SessionControlIntent, TurnKind
+from ..contracts.placement import PlacementTargetSpec
 from .motion_policy import MotionPolicy
 from ..semantics.evidence import extract_semantic_evidence
 from ..semantics.entity_normalizer import same_semantic_role
@@ -48,6 +49,7 @@ class ParseOperation(StrictModel):
     reference: str | None = None
     motion_direction: str | None = None
     distance_m: float | None = Field(default=None, gt=0, le=2)
+    placement_target: PlacementTargetSpec | None = None
 
 
 class ParseRelation(StrictModel):
@@ -271,6 +273,8 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
                 instruction=instruction,
                 explanation="模型未返回可安全恢复的高层操作。",
             )
+    from ..semantics.placement_normalizer import normalize_placement_operations
+    parsed, placement_repairs = normalize_placement_operations(parsed, instruction)
     explicit_evidence = extract_semantic_evidence(instruction)
     semantic_aliases = {"苹果": "apple", "香蕉": "banana", "棒球": "baseball", "球": "ball", "盒子": "box", "篮子": "basket"}
     motion_spans = _extract_explicit_motion_spans(instruction)
@@ -291,7 +295,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
     text_direction, text_distance, text_is_vague = _instruction_motion(instruction)
     has_model_move = any(operation.type == "move" for operation in parsed.operations)
     parsed_move_count = sum(1 for operation in parsed.operations if operation.type == "move")
-    repairs: list[dict[str, object]] = [*quantity_repairs, *missing_operation_repairs]
+    repairs: list[dict[str, object]] = [*quantity_repairs, *missing_operation_repairs, *placement_repairs]
     operations = []
     for index, op in enumerate(parsed.operations):
         # A single grasp/locate result for an explicit displacement is a common
@@ -332,6 +336,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             depends_on=[f"op-{index}"] if index else [],
             motion_direction=direction,
             distance_m=distance_m,
+            placement_target=op.placement_target,
         ))
     task_types = list(dict.fromkeys(operation.task_type for operation in operations))
     if len(task_types) > 1:

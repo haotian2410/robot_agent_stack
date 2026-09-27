@@ -8,6 +8,7 @@ from ..contracts.task_intent import Direction, QuantityMode, SpatialRelationType
 from .constraints import SceneConstraintError
 from .registry import SceneObject, SceneRegistry
 from .support_surfaces import WORKSPACE_X, WORKSPACE_Y
+from ..execution.placement_allocator import allocate_interior_slots
 
 MIN_GAP_M = 0.04
 
@@ -34,8 +35,14 @@ class SceneComposer:
                 multi_destinations.add(operation.destination)
         for entity_id in multi_destinations:
             asset = assets.get(entity_id)
-            if asset is not None and asset.model_name == "open_box" and (asset.dimensions_m is None or asset.dimensions_m[0] < 0.28):
-                assets[entity_id] = asset.model_copy(update={"dimensions_m": (0.28, 0.24, 0.12)})
+            if asset is not None and asset.model_name == "open_box" and (asset.dimensions_m is None or asset.dimensions_m[0] < 0.36):
+                # Leave clearance around the gripper as well as around the
+                # payload footprint.  A tight 0.28 m box technically fits
+                # three balls but forces later slots against a wall; contact
+                # impulses then move an already released ball back into the
+                # centre.  The larger deterministic multi-object primitive
+                # keeps every floor slot physically reachable.
+                assets[entity_id] = asset.model_copy(update={"dimensions_m": (0.36, 0.30, 0.12)})
         ranking_relations = {
             SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
             SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,
@@ -81,6 +88,11 @@ class SceneComposer:
             if entity_id in placed or entity_id in selection_subjects:
                 return
             entity = by_entity[entity_id]
+            # ``__table__`` is a synthetic support surface backed by the
+            # generated work_table body; it is not an asset/object to spawn.
+            if entity.category == "support_surface" or entity_id == "__table__":
+                placed.add(entity_id)
+                return
             if entity_id in placing:
                 raise ValueError("cyclic spatial relations are not supported")
             placing.add(entity_id)
@@ -119,8 +131,39 @@ class SceneComposer:
             # authored population instead.
             count = (max(int(entity.count), 2) if entity.all_available else int(entity.count)) if entity.quantity_mode == QuantityMode.ALL else 1
             members = []
+            inside_slots = None
+            if relation is not None and relation.relation == SpatialRelationType.INSIDE:
+                reference_item = next(item for item in objects if item.object_id == bindings[relation.reference])
+                reference_asset = assets[relation.reference]
+                container_dimensions = reference_item.dimensions_m or reference_asset.dimensions_m or _primitive_dimensions(reference_asset.model_name)
+                wall = 0.008
+                local_min = (-(container_dimensions[0] / 2 - wall - 0.002), -(container_dimensions[1] / 2 - wall - 0.002), wall + 0.002)
+                local_max = (container_dimensions[0] / 2 - wall - 0.002, container_dimensions[1] / 2 - wall - 0.002, container_dimensions[2] - 0.002)
+                source_dimensions = assets[entity_id].dimensions_m or _primitive_dimensions(assets[entity_id].model_name)
+                # Generated open boxes explicitly permit a small overhang for
+                # curved meshes whose AABB is longer than the cavity.  This
+                # remains bounded by the same policy used by the runtime
+                # placement resolver; other container types stay strict.
+                max_overhang = 0.05 if reference_asset.model_name == "open_box" else 0.0
+                inside_slots = allocate_interior_slots(local_min, local_max, source_dimensions, gap=0.01, max_overhang=max_overhang)
+                if len(inside_slots) < count:
+                    raise SceneConstraintError(f"scene_generation_constraint_failed: insufficient interior slots for {entity_id}")
             for index in range(count):
-                item = self._make_object(entity, assets[entity_id], index + 1, objects, rng, intent, preferred=preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
+                member_preferred = preferred
+                if inside_slots is not None:
+                    slot = inside_slots[index]
+                    reference_item = next(item for item in objects if item.object_id == bindings[relation.reference])
+                    member_preferred = (
+                        reference_item.position[0] + slot.local_position[0],
+                        reference_item.position[1] + slot.local_position[1],
+                        # SceneObject positions use the generated asset's
+                        # contact/body frame: imported meshes are translated
+                        # so their lowest vertex is at local z=0.  The
+                        # allocator's z is a geometric centre used for
+                        # containment, not a MuJoCo body pose.
+                        reference_item.position[2] + local_min[2],
+                    )
+                item = self._make_object(entity, assets[entity_id], index + 1, objects, rng, intent, preferred=member_preferred, allow_overlap_object=(bindings[relation.reference] if relation and relation.relation == SpatialRelationType.INSIDE else None))
                 objects.append(item); members.append(item.object_id)
             entity_members[entity.entity_id] = members
             bindings[entity.entity_id] = members[0]

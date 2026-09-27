@@ -11,12 +11,15 @@ from robot_agent_protocol import CommandDocument, ErrorCode, ExecutionBundle, Ex
 
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
+from ..contracts.placement import PlacementTargetKind
 from .interaction_registry_builder import build_authored_registry
 
 
 REGION_TO_ANCHOR = {
     "grasp_region": "grasp",
+    "placement_region": "resolved_placement",
     "container_interior": "interior",
+    "support_surface": "support_surface",
     "button_surface": "button_surface",
 }
 
@@ -42,6 +45,7 @@ def compile_execution_bundle(
     )
     registry = json.loads(registry_output.read_text(encoding="utf-8"))
     objects = registry["objects"]
+    operations = {operation.operation_id: operation for operation in grounded_task.operations}
     commands: list[SkillCommand] = []
     traces: list[dict[str, Any]] = []
     placement_assignments: list[dict[str, Any]] = []
@@ -95,6 +99,38 @@ def compile_execution_bundle(
                 continue
             spatial = objects[target].get("spatial", {})
             desired = REGION_TO_ANCHOR.get(step.semantic_target or "")
+            if desired == "resolved_placement":
+                # ``placement_region`` is deliberately neutral in the
+                # semantic plan.  A live SceneSession writes a
+                # ``resolved_placement`` anchor; standalone Route A/B bundle
+                # compilation still needs to use the authored anchor that
+                # corresponds to the operation's semantic kind.
+                operation = operations.get(step.operation_id)
+                placement = operation.placement_target if operation is not None else None
+                if placement is not None:
+                    if placement.kind == PlacementTargetKind.CONTAINER_INTERIOR:
+                        desired = "interior"
+                    elif placement.kind in {PlacementTargetKind.SUPPORT_SURFACE, PlacementTargetKind.FREE_SPACE}:
+                        desired = "support_surface"
+                    elif placement.kind == PlacementTargetKind.RELATIVE_OBJECT:
+                        # Relative placement requires a live resolver because
+                        # its host-local anchor depends on current occupancy.
+                        # Do not silently map it to the reference object's
+                        # grasp point.
+                        if "resolved_placement" not in spatial.get("anchors", {}):
+                            raise ValueError("placement_resolution_required: relative_object")
+                else:
+                    # Pre-v1 tasks have only an explicit INSIDE/ON goal
+                    # relation.  Preserve their established container anchor
+                    # while newer sessions use the live resolver.
+                    goal = next(
+                        (relation for relation in grounded_task.spatial_relations
+                         if relation.scope == "goal"
+                         and relation.subject == (operation.source if operation else None)
+                         and relation.reference == (operation.destination if operation else None)),
+                        None,
+                    )
+                    desired = "support_surface" if getattr(goal, "relation", None) and str(goal.relation.value) == "on" else "interior"
             if desired == "interior":
                 # ConcreteTaskExpander gives broadcast/pairwise children a
                 # stable ``__NN`` suffix.  Resolve any suffix, not just the
@@ -104,6 +140,13 @@ def compile_execution_bundle(
                 if match:
                     desired = f"interior_slot_{int(match.group(1))}"
             anchors = spatial.get("anchors", {})
+            # A live session writes one freshly resolved placement anchor for
+            # the concrete operation.  Legacy expanded plans may still name
+            # ``interior_slot_N``; map that name to the live allocation when
+            # no static slot is present rather than falling back to an old
+            # hard-coded coordinate.
+            if desired and desired.startswith("interior_slot_") and desired not in anchors and "resolved_placement" in anchors:
+                desired = "resolved_placement"
             if desired is not None and desired not in anchors:
                 if desired.startswith("interior_slot_"):
                     raise ValueError(f"placement_capacity_exceeded: {target}.{desired}")

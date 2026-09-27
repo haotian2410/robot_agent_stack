@@ -21,7 +21,7 @@ def _press(operation):
 
 
 def _pick_and_place(operation):
-    return [("locate", "source", None, None), ("move", "source", None, "grasp_region"), ("grasp", "source", None, None), ("locate", "destination", None, None), ("move", "destination", "source", "container_interior"), ("release", "source", "destination", "container_interior")]
+    return [("locate", "source", None, None), ("move", "source", None, "grasp_region"), ("grasp", "source", None, None), ("locate", "destination", None, None), ("move", "destination", "source", "placement_region"), ("release", "source", "destination", "placement_region")]
 
 
 def _locate(operation): return [("locate", "target", None, None)]

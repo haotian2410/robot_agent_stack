@@ -57,10 +57,16 @@ def validate_generated_scene(intent, registry) -> None:
             subject = objects[subject_id]
             point = positions[subject_id]
             subject_half = tuple(dimension / 2 for dimension in (subject.dimensions_m or (0, 0, 0)))
-            if not all(
-                abs(point[index] - container.position[index]) + subject_half[index] <= half[index]
-                for index in range(3)
-            ):
+            overhang = 0.05 if container.model_name == "open_box" else 0.0
+            horizontal_inside = all(
+                abs(point[index] - container.position[index]) + subject_half[index] <= half[index] + overhang
+                for index in (0, 1)
+            )
+            # Generated open containers may hold an object whose mesh is
+            # taller than the low rim; “inside” is defined by the cavity
+            # footprint, while the controller handles the above-rim grasp.
+            vertical_valid = point[2] + subject_half[2] >= container.position[2]
+            if not horizontal_inside or not vertical_valid:
                 raise SceneConstraintError("scene_generation_constraint_failed: inside relation not satisfied")
             continue
         subject = positions[subject_id]

@@ -11,6 +11,10 @@ from typing import Any
 from ..execution.compiler import compile_directory
 from ..execution.compiler import compile_execution_bundle
 from ..execution.placement_allocator import allocate_interior_slots
+from ..execution.placement.resolver import PlacementResolver
+from ..execution.placement.geometry import quaternion_inverse_rotate
+from ..contracts.placement import PlacementTargetKind, PlacementTargetSpec
+from ..semantics.placement_normalizer import TABLE_ENTITY
 from .batch_executor import slice_skill_plan_for_operation
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan
@@ -21,7 +25,7 @@ from ..scene.mutator import SceneMutator
 from ..scene.registry import SceneRegistry
 from ..grounding.segmentation import InstanceObservation, SceneObservation
 from ..grounding.name_matching import exact_name_match
-from .contracts import DialogueState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, SessionControlType, TurnKind, WorldState
+from .contracts import DialogueState, ObjectWorldState, SceneEditIntent, SceneEditType, SceneQueryIntent, SceneQueryType, SemanticMap, SemanticObject, SessionControlType, TurnKind, WorldState
 from .referent_binder import DialogueBinding, ReferentBinder
 
 
@@ -285,16 +289,21 @@ class SceneSession:
         return {"snapshot": self.world_state.model_dump(mode="json"), "report": combined}, batch
 
     def _prepare_live_placement(self, operation, grounded: GroundedTask, skill: SkillPlan, sub_dir: Path) -> tuple[Path, dict[str, Any] | None]:
-        """Allocate a container slot from the current live world state.
-
-        The interaction sidecar remains authored/static metadata.  A per-
-        subtask copy receives only the current ``interior`` anchor override,
-        so the next operation recomputes against the post-execution snapshot.
-        """
+        """Resolve a semantic placement against the current live world state."""
         if self.interaction_registry is None or self.world_state is None or self.scene_registry is None:
-            return self.interaction_registry, None
-        interior_steps = [step for step in skill.steps if step.semantic_target == "container_interior"]
-        if not interior_steps or not operation.destination:
+            if self.interaction_registry is None or self.scene_registry is None:
+                return self.interaction_registry, None
+            if self.world_state is None:
+                registry_model = SceneRegistry.model_validate(self.scene_registry)
+                self.world_state = WorldState(
+                    world_version=0,
+                    scene_version=max(self.scene_version, 1),
+                    turn_index=self.turn_index,
+                    sim_time=0.0,
+                    objects={item.object_id: ObjectWorldState(object_id=item.object_id, body_name=item.body_name, position=item.position, quaternion=(1.0, 0.0, 0.0, 0.0)) for item in registry_model.objects},
+                )
+        placement_steps = [step for step in skill.steps if step.semantic_target in {"placement_region", "container_interior", "support_surface"}]
+        if not placement_steps or not operation.destination:
             return self.interaction_registry, None
         destination_entity = next((item for item in grounded.entities if item.entity_id == operation.destination), None)
         source_entity = next((item for item in grounded.entities if item.entity_id == (operation.source or operation.target)), None)
@@ -303,60 +312,97 @@ class SceneSession:
         destination_id = destination_entity.object_id
         source_id = source_entity.object_id
         data = json.loads(Path(self.interaction_registry).read_text(encoding="utf-8"))
-        target = data.get("objects", {}).get(destination_id)
-        if not isinstance(target, dict):
-            return self.interaction_registry, None
-        spatial = target.get("spatial", {})
-        region = spatial.get("regions", {}).get("interior")
-        anchors = spatial.get("anchors", {})
-        interior_anchor = anchors.get("interior")
-        if not isinstance(region, dict) or not isinstance(interior_anchor, dict):
-            # A legacy/authored registry can still execute one placement at
-            # its authored center, but must not silently overlap later items.
-            existing_contents = self._objects_inside_container(destination_id, None)
-            if existing_contents:
-                raise ValueError("placement_region_metadata_required: container interior bounds are missing")
-            return self.interaction_registry, None
-        container_item = next((item for item in SceneRegistry.model_validate(self.scene_registry).objects if item.object_id == destination_id), None)
         source_item = next((item for item in SceneRegistry.model_validate(self.scene_registry).objects if item.object_id == source_id), None)
-        if container_item is None or source_item is None:
-            return self.interaction_registry, None
-        container_position = self.world_state.objects.get(destination_id)
-        if container_position is None:
-            return self.interaction_registry, None
-        source_dimensions = source_item.dimensions_m or (0.06, 0.06, 0.06)
-        local_min = tuple(float(value) for value in region.get("local_min", ()))
-        local_max = tuple(float(value) for value in region.get("local_max", ()))
-        if len(local_min) != 3 or len(local_max) != 3:
-            raise ValueError("placement_region_metadata_required: invalid container interior bounds")
-        # Keep allocation inside the authored footprint even when an imported
-        # mesh reports a decorative overhang wider than the usable interior.
-        source_dimensions = (
-            min(float(source_dimensions[0]), max(local_max[0] - local_min[0] - 1e-4, 1e-4)),
-            min(float(source_dimensions[1]), max(local_max[1] - local_min[1] - 1e-4, 1e-4)),
-            float(source_dimensions[2]),
+        source_dimensions = source_item.dimensions_m if source_item and source_item.dimensions_m else (0.06, 0.06, 0.06)
+        spec = operation.placement_target
+        if spec is None:
+            # Backward-compatible uploaded/old artifacts: destination
+            # containers retain the historical default semantics.
+            spec = PlacementTargetSpec(kind=PlacementTargetKind.CONTAINER_INTERIOR, reference=operation.destination, relation="inside")
+        else:
+            # PlacementTargetSpec is expressed in semantic entity IDs, while
+            # the live resolver and interaction registry are keyed by concrete
+            # grounded object IDs.  Keep the semantic spec in the plan/report,
+            # but resolve its host through the current binding before doing
+            # geometry (this matters when an uploaded registry names an object
+            # ``blue_cabinet_upper_compartment`` for entity
+            # ``upper_compartment_01``).
+            spec = spec.model_copy(update={
+                "reference": destination_id if spec.reference == operation.destination else spec.reference,
+                "support": destination_id if spec.support == operation.destination else spec.support,
+            })
+        resolved = PlacementResolver().resolve(
+            spec,
+            source_object_id=source_id,
+            world_state=self.world_state,
+            scene_registry=SceneRegistry.model_validate(self.scene_registry),
+            interaction_registry=data,
+            source_dimensions=source_dimensions,
+            world_version=self.world_state.world_version,
         )
-        occupied = self._objects_inside_container(destination_id, (local_min, local_max), exclude={source_id})
-        slots = allocate_interior_slots(local_min, local_max, source_dimensions, occupied=occupied)
-        if not slots:
-            raise ValueError(f"placement_capacity_exceeded: {destination_id}")
-        slot = slots[0]
-        old_position = interior_anchor.get("local_position", [0.0, 0.0, 0.05])
-        local_position = [slot.local_position[0], slot.local_position[1], max(slot.local_position[2], float(old_position[2]))]
-        interior_anchor["local_position"] = local_position
-        data.setdefault("metadata", {})["placement_allocator"] = "live_world_floor_grid"
+        target = data.setdefault("objects", {}).get(resolved.host_object_id)
+        if not isinstance(target, dict):
+            raise ValueError(f"placement_reference_missing: {resolved.host_object_id}")
+        spatial = target.setdefault("spatial", {})
+        anchors = spatial.setdefault("anchors", {})
+        # ``ResolvedPlacement.world_position`` is the final payload pose.  A
+        # registry anchor, however, is expressed in the host object's local
+        # frame and is the pose of the end effector, not the payload body
+        # origin.  Convert world-space relative placements back into that
+        # frame before writing the temporary registry override.
+        host_state = self.world_state.objects.get(resolved.host_object_id)
+        if resolved.local_position is not None:
+            anchor_position = list(resolved.local_position)
+        elif host_state is not None:
+            relative_world = tuple(
+                resolved.world_position[index] - host_state.position[index]
+                for index in range(3)
+            )
+            anchor_position = list(
+                quaternion_inverse_rotate(relative_world, host_state.quaternion)
+            )
+        else:
+            anchor_position = list(resolved.world_position)
+        if resolved.kind == PlacementTargetKind.RELATIVE_OBJECT:
+            # Relative placement is normally on the same tabletop plane as
+            # the reference object.  Move to the source centre height so the
+            # carried payload is released without driving the gripper into
+            # the table or the neighbouring object.
+            anchor_position[2] += float(source_dimensions[2]) / 2.0
+        elif resolved.kind == PlacementTargetKind.CONTAINER_INTERIOR:
+            # Keep the authored interior approach height (it is deliberately
+            # above the container floor) while replacing only its allocated
+            # XY slot.  This preserves the proven open-box clearance for
+            # rotated and legacy registries.
+            authored_anchor = (spatial.get("anchors", {}) or {}).get("interior", {})
+            authored_position = authored_anchor.get("local_position") if isinstance(authored_anchor, dict) else None
+            if isinstance(authored_position, (list, tuple)) and len(authored_position) == 3:
+                anchor_position[2] = float(authored_position[2])
+        if resolved.kind in {PlacementTargetKind.SUPPORT_SURFACE, PlacementTargetKind.FREE_SPACE}:
+            # The resolved world position is the object's final contact pose;
+            # the gripper must stop above that pose to avoid penetrating the
+            # tabletop before release.
+            anchor_position[2] = max(anchor_position[2] + 0.06, 0.10)
+        anchors["resolved_placement"] = {
+            "target_id": f"{resolved.host_object_id}_resolved_placement",
+            "aliases": ["resolved placement", "placement_region"],
+            "local_position": anchor_position,
+        }
+        # Keep legacy planner output executable while the semantic planner
+        # migrates to ``placement_region``.  Both names intentionally point
+        # to the same live allocation, so an old ``container_interior`` or
+        # ``support_surface`` step cannot silently use a stale authored pose.
+        if resolved.kind == PlacementTargetKind.CONTAINER_INTERIOR:
+            anchors["interior"] = anchors["resolved_placement"]
+        elif resolved.kind in {PlacementTargetKind.SUPPORT_SURFACE, PlacementTargetKind.FREE_SPACE}:
+            anchors["support_surface"] = anchors["resolved_placement"]
+        spatial["default_anchor"] = "resolved_placement"
         sub_dir.mkdir(parents=True, exist_ok=True)
         override_path = sub_dir / "interaction_registry_input.json"
         override_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        placement = {
-            "container_object": destination_id,
-            "source_object": source_id,
-            "anchor": "interior",
-            "local_position": local_position,
-            "occupied_count": len(occupied),
-            "allocator": "live_world_floor_grid",
-        }
-        (sub_dir / "placement_assignment.json").write_text(json.dumps(placement, ensure_ascii=False, indent=2), encoding="utf-8")
+        placement = resolved.model_dump(mode="json")
+        (sub_dir / "placement_resolution.json").write_text(json.dumps(placement, ensure_ascii=False, indent=2), encoding="utf-8")
+        (sub_dir / "placement_assignment.json").write_text(json.dumps({"resolved": placement}, ensure_ascii=False, indent=2), encoding="utf-8")
         return override_path, placement
 
     def _objects_inside_container(self, container_id: str, bounds=None, exclude: set[str] | None = None) -> list[tuple[tuple[float, float], tuple[float, float]]]:

@@ -175,6 +175,7 @@ class GraspSkill:
                     last_result["parameters"]["open_width"],
                     speed=last_result["parameters"]["close_speed"],
                     timeout=request["constraints"]["timeout"],
+                    target_object_id=request["target"].get("object_id"),
                 )
         selection["retry_used"] = attempts > 1
         return last_result or {}

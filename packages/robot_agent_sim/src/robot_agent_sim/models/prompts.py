@@ -39,6 +39,13 @@ TASK_UNDERSTANDING_PROMPT = """你是机器人任务的语义解析器。
 - open/close：target=门或抽屉，reference=对应把手；
 - grasp/press/locate：target=被操作对象；
 - move：target 或 source=被移动对象。
+- pick_and_place 必须保留 placement_target 语义字段，只描述放置类型和参照物，不输出坐标：
+  - “放进盒子”→ {"kind":"container_interior","reference":"box","relation":"inside"}
+  - “放到桌面上”→ {"kind":"support_surface","reference":"table","relation":"on"}
+  - “放到棒球右边”→ {"kind":"relative_object","reference":"baseball","relation":"right_of"}
+  - “放到棒球旁边”→ {"kind":"relative_object","reference":"baseball","relation":"near"}
+  - “找个空位置放”→ {"kind":"free_space","reference":null,"relation":null}；如果明确说桌面，则 reference=table。
+  destination 必须与 placement_target.reference 一致。不得输出 XYZ、固定距离或抬升/后退策略。
 不得把 pick_and_place 改写为 locate/move/grasp/release。用户描述多个高层目标时保留多个 operation，顺序与用户表达一致。同一集合跨多个阶段时必须复用同一 entity，不得把不同阶段分配给不同成员。
 
 ## 7. Direction 与 selector
@@ -100,6 +107,7 @@ SKILL_PLANNING_PROMPT = """你是机器人高层技能规划器。
 - 只能使用 Atomic Skill Catalog 中存在的技能，使用前必须满足其 affordance 和 preconditions；
 - 必须保持 operation 顺序及其依赖顺序；
 - target/reference/source/destination 只能引用当前 operation 的角色；
+- pick_and_place 的 placement_target 已由上游确定。统一使用 move(..., region="placement_region") 和 release(..., region="placement_region")，不得自行改成 container_interior、relative_region 或生成坐标；具体物理位置由 Python PlacementResolver 决定。
 - 不要重新解释或修改给定 operation type；
 - 不要输出 object_id、step_id、depends_on、XYZ、关节角、轨迹、距离或解释；
 - 输出必须严格满足 SkillPlan LLM schema，且必须覆盖 operations 中的每一个 operation；

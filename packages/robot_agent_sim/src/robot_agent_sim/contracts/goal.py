@@ -11,6 +11,7 @@ class GoalRelation(StrEnum):
     HELD = "held"
     NOT_HELD = "not_held"
     INSIDE = "inside"
+    ON = "on"
     OPEN = "open"
     CLOSED = "closed"
     LEFT_OF = "left_of"
@@ -19,6 +20,7 @@ class GoalRelation(StrEnum):
     BEHIND = "behind"
     ABOVE = "above"
     BELOW = "below"
+    NEAR = "near"
 
 
 class GoalSource(StrEnum):

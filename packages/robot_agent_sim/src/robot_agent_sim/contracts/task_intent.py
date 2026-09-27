@@ -4,6 +4,8 @@ from enum import StrEnum
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..semantics.operation_contracts import validate_operation_contract, validate_relation_consistency
+from .spatial import SpatialRelationType
+from .placement import PlacementTargetSpec
 
 
 class TaskStatus(StrEnum):
@@ -44,30 +46,6 @@ class Direction(StrEnum):
     DOWN = "down"
 
 
-class SpatialRelationType(StrEnum):
-    LEFT = "left"
-    RIGHT = "right"
-    FRONT = "front"
-    BACK = "back"
-    UP = "up"
-    DOWN = "down"
-    LEFT_OF = "left_of"
-    RIGHT_OF = "right_of"
-    FRONT_OF = "front_of"
-    BEHIND = "behind"
-    ABOVE = "above"
-    BELOW = "below"
-    INSIDE = "inside"
-    NEAREST = "nearest"
-    FARTHEST = "farthest"
-    LEFTMOST = "leftmost"
-    RIGHTMOST = "rightmost"
-    FRONTMOST = "frontmost"
-    BACKMOST = "backmost"
-    HIGHEST = "highest"
-    LOWEST = "lowest"
-
-
 class TaskEntity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     entity_id: str = Field(pattern=r"^[\w-]+$")
@@ -94,7 +72,8 @@ class SpatialRelation(BaseModel):
             SpatialRelationType.FRONT_OF, SpatialRelationType.BEHIND,
             SpatialRelationType.ABOVE, SpatialRelationType.BELOW,
             SpatialRelationType.INSIDE, SpatialRelationType.NEAREST,
-            SpatialRelationType.FARTHEST,
+            SpatialRelationType.FARTHEST, SpatialRelationType.ON,
+            SpatialRelationType.NEAR,
         }
         if self.relation in binary and self.reference is None:
             raise ValueError(f"task_semantic_invalid: {self.relation.value} requires reference")
@@ -117,6 +96,7 @@ class Operation(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     motion_direction: Direction | None = None
     distance_m: float | None = Field(default=None, gt=0, le=2)
+    placement_target: PlacementTargetSpec | None = None
 
 
 class TaskIntent(BaseModel):
@@ -150,6 +130,11 @@ class TaskIntent(BaseModel):
             if any(operation_position[dependency] >= operation_position[op.operation_id] for dependency in op.depends_on):
                 raise ValueError("operation depends_on must point to an earlier operation")
             validate_operation_contract(op)
+            if op.placement_target is not None:
+                refs = {value for value in (op.placement_target.reference, op.placement_target.support) if value}
+                missing_placement = refs - entity_ids
+                if missing_placement:
+                    raise ValueError(f"placement_target references unknown entities: {sorted(missing_placement)}")
         for rel in self.spatial_relations:
             if rel.subject not in entity_ids or (rel.reference and rel.reference not in entity_ids):
                 raise ValueError("spatial relation references unknown entity")
