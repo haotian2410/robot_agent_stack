@@ -112,7 +112,24 @@ _EXPLICIT_MOTION_DIRECTIONS = (
     (r"(?:向|往|朝)\s*下\s*(?:移(?:动)?|挪)|下移", "down"),
 )
 
-_DISTANCE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(厘米|cm|米|m)", re.IGNORECASE)
+_DISTANCE_PATTERN = re.compile(r"(\d+(?:\.\d+)?|[零一二两三四五六七八九十百]+)\s*(厘米|cm|米|m)", re.IGNORECASE)
+
+
+def _parse_distance_number(value: str) -> float:
+    if value.isdigit() or re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return float(value)
+    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10.0
+    if "百" in value:
+        left, right = value.split("百", 1)
+        return float((digits.get(left, 1) if left else 1) * 100 + _parse_distance_number(right) if right else (digits.get(left, 1) if left else 1) * 100)
+    if "十" in value:
+        left, right = value.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        return float(tens * 10 + (digits.get(right, 0) if right else 0))
+    return float(digits[value])
 
 
 @dataclass(frozen=True)
@@ -145,7 +162,7 @@ def _extract_explicit_motion_spans(instruction: str) -> list[ExplicitMotionSpan]
         distance_match = _DISTANCE_PATTERN.search(instruction, end, window_end)
         distance_m = None
         if distance_match is not None:
-            distance_m = float(distance_match.group(1))
+            distance_m = _parse_distance_number(distance_match.group(1))
             if distance_match.group(2).casefold() in {"厘米", "cm"}:
                 distance_m /= 100.0
         spans.append(ExplicitMotionSpan(
