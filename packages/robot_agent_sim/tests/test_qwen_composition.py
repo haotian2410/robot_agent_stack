@@ -68,6 +68,46 @@ def test_directional_move_override_preserves_primary_role(role):
     assert plan.steps[3].semantic_target == "relative_motion"
 
 
+def test_qwen_payload_style_placement_move_is_canonicalized_to_destination_host():
+    task = GroundedTask(
+        instruction="把苹果放到棒球旁边",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="baseball", semantic_name="baseball", object_id="baseball-01", grounding_method="asset_scene_binding"),
+        ],
+        operations=[Operation(
+            operation_id="op-1",
+            task_type=TaskType.PICK_AND_PLACE,
+            source="apple",
+            destination="baseball",
+            placement_target={"kind": "relative_object", "reference": "baseball", "relation": "near"},
+        )],
+        spatial_relations=[SpatialRelation(scope="goal", subject="apple", relation=SpatialRelationType.NEAR, reference="baseball")],
+        scene_id="placement-role-normalization",
+    )
+    output = SkillPlanLLMOutput(operations=[{
+        "id": "op-1",
+        "steps": [
+            {"skill": "locate", "target": "source"},
+            {"skill": "move", "target": "source", "region": "grasp_region"},
+            {"skill": "grasp", "target": "source"},
+            # This is the payload-style form returned by the failing Qwen run.
+            {"skill": "move", "target": "source", "reference": "destination", "region": "placement_region"},
+            {"skill": "release", "target": "source", "reference": "destination", "region": "placement_region"},
+        ],
+    }])
+    plan = enrich_skill_plan(output, task)
+    placement_move = plan.steps[4]
+    placement_release = plan.steps[5]
+    assert plan.steps[3].skill_name == "locate"
+    assert plan.steps[3].target_object == "baseball-01"
+    assert placement_move.target_object == "baseball-01"
+    assert placement_move.reference_object == "apple-01"
+    assert placement_release.target_object == "apple-01"
+    assert placement_release.reference_object == "baseball-01"
+
+
 def test_catalog_and_prompt_do_not_leak_recipes():
     catalog = REGISTRY.prompt_catalog()
     assert "description:" in catalog and "requires: pressable" in catalog

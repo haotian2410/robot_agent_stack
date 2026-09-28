@@ -235,11 +235,37 @@ def _validate(plan, task, context, skill_registry) -> None:
             if held != target:
                 raise ValueError(f"release requires held target: {target}")
             if step.semantic_target:
-                destination = reference or target
-                if (destination, step.semantic_target) not in reached:
-                    raise ValueError(
-                        f"release requires reached {step.semantic_target} for {destination}"
+                operation = next(item for item in task.operations if item.operation_id == step.operation_id)
+                placement = operation.placement_target
+                if (
+                    operation.task_type.value == "pick_and_place"
+                    and placement is not None
+                    and step.semantic_target == "placement_region"
+                ):
+                    # Placement is a structured semantic target.  The host
+                    # (for example baseball in “put apple beside baseball”)
+                    # is not the object being released.  Validate the
+                    # complete operation-owned placement record instead of
+                    # looking up the old ``(destination, region)`` tuple.
+                    expected_host = placement.reference or placement.support or operation.destination or ""
+                    expected_relation = placement.relation.value if placement.relation else None
+                    reached_placement = any(
+                        item.source_entity == (operation.source or operation.target or "")
+                        and item.host_entity == expected_host
+                        and item.kind == placement.kind
+                        and item.relation == expected_relation
+                        for item in operation_placements[step.operation_id]
                     )
+                    if not reached_placement:
+                        raise ValueError(
+                            f"release requires resolved placement for {expected_host}"
+                        )
+                else:
+                    destination = reference or target
+                    if (destination, step.semantic_target) not in reached:
+                        raise ValueError(
+                            f"release requires reached {step.semantic_target} for {destination}"
+                        )
             held = None
         elif step.skill_name == "press":
             if target not in located:
