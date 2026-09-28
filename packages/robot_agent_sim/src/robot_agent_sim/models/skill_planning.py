@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..contracts.grounded_task import GroundedTask
 from ..contracts.skill_plan import SkillPlan, SkillStep
@@ -16,13 +16,25 @@ class StrictModel(BaseModel):
 
 class LLMPlanStep(StrictModel):
     skill: str
-    target: Literal["source", "destination", "target", "reference"] | None = None
-    reference: Literal["source", "destination", "target", "reference"] | None = None
+    target_role: Literal["source", "destination", "target", "reference"] | None = None
+    reference_role: Literal["source", "destination", "target", "reference"] | None = None
     region: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_role_fields(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            if "target_role" not in value and "target" in value:
+                value["target_role"] = value.pop("target")
+            if "reference_role" not in value and "reference" in value:
+                value["reference_role"] = value.pop("reference")
+        return value
 
 
 class LLMOperationPlan(StrictModel):
     id: str
+    intent: str = Field(min_length=1, max_length=300)
     steps: list[LLMPlanStep]
 
 
@@ -73,16 +85,32 @@ def _normalize_pick_and_place_steps(operation, raw_steps: list[LLMPlanStep]) -> 
         len(raw_steps),
     )
     prefix = list(raw_steps[:first_placement])
-    if not any(step.skill == "locate" and step.target == "destination" for step in prefix):
-        prefix.append(LLMPlanStep(skill="locate", target="destination"))
+    if not any(step.skill == "locate" and step.target_role == "destination" for step in prefix):
+        prefix.append(LLMPlanStep(skill="locate", target_role="destination"))
     prefix.extend([
-        LLMPlanStep(skill="move", target="destination", reference="source", region="placement_region"),
-        LLMPlanStep(skill="release", target="source", reference="destination", region="placement_region"),
+        LLMPlanStep(skill="move", target_role="destination", reference_role="source", region="placement_region"),
+        LLMPlanStep(skill="release", target_role="source", reference_role="destination", region="placement_region"),
     ])
     return prefix
 
 
-def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPlan:
+def operation_valid_roles(operation) -> tuple[str, ...]:
+    return tuple(role for role in ("source", "destination", "target", "reference") if getattr(operation, role) is not None)
+
+
+class PlannerRoleError(ValueError):
+    pass
+
+
+def _role_error(operation, role: str, step: LLMPlanStep) -> PlannerRoleError:
+    valid = list(operation_valid_roles(operation))
+    return PlannerRoleError(
+        f"planner_role_invalid: operation={operation.operation_id} "
+        f"used_role={role} valid_roles={valid} step={step.skill}"
+    )
+
+
+def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask, repairs: list[dict] | None = None) -> SkillPlan:
     grounded = {entity.entity_id: entity.object_id for entity in task.entities}
     operations = {operation.operation_id: operation for operation in task.operations}
     expected_ids = [operation.operation_id for operation in task.operations]
@@ -95,14 +123,39 @@ def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPl
         if operation.motion_direction and operation.task_type.value == "move":
             primary_role = "target" if operation.target is not None else "source"
             raw_steps = [
-                LLMPlanStep(skill="locate", target=primary_role),
-                LLMPlanStep(skill="move", target=primary_role, region="grasp_region"),
-                LLMPlanStep(skill="grasp", target=primary_role),
-                LLMPlanStep(skill="move", target=primary_role, region="relative_motion"),
-                LLMPlanStep(skill="release", target=primary_role),
+                LLMPlanStep(skill="locate", target_role=primary_role),
+                LLMPlanStep(skill="move", target_role=primary_role, region="grasp_region"),
+                LLMPlanStep(skill="grasp", target_role=primary_role),
+                LLMPlanStep(skill="move", target_role=primary_role, region="relative_motion"),
+                LLMPlanStep(skill="release", target_role=primary_role),
             ]
         raw_steps = _normalize_pick_and_place_steps(operation, raw_steps)
-        for raw in raw_steps:
+        for index, raw in enumerate(raw_steps):
+            target_role = raw.target_role
+            reference_role = raw.reference_role
+            # A few local Qwen checkpoints use the generic literal ``target``
+            # for the first locate/grasp step.  For pick_and_place this is
+            # uniquely recoverable because the operation has source and
+            # destination but no target role.  Never apply this repair to
+            # open/close or to an operation with an actual target role.
+            if (
+                operation.task_type.value == "pick_and_place"
+                and operation.target is None
+                and target_role == "target"
+                and raw.skill in {"locate", "move", "grasp"}
+                and raw.region in {None, "grasp_region"}
+            ):
+                target_role = "source"
+                if repairs is not None:
+                    repairs.append({
+                        "operation_id": operation.operation_id,
+                        "step_index": index,
+                        "type": "invalid_role_repair",
+                        "field": "target_role",
+                        "from": "target",
+                        "to": "source",
+                        "reason": "unique_role_from_pick_and_place_grasp_prefix",
+                    })
             # Placement semantics belong to the operation, not to an LLM
             # choice of which role is being moved.  Qwen sometimes expresses
             # the placement move as ``move(source, reference=destination)``
@@ -113,25 +166,20 @@ def enrich_skill_plan(output: SkillPlanLLMOutput, task: GroundedTask) -> SkillPl
             # validation/compilation.
             if operation.task_type.value == "pick_and_place" and raw.region in _PLACEMENT_REGIONS:
                 if raw.skill == "move":
-                    raw = raw.model_copy(update={
-                        "target": "destination",
-                        "reference": "source",
-                        "region": "placement_region",
-                    })
+                    target_role, reference_role = "destination", "source"
                 elif raw.skill == "release":
-                    raw = raw.model_copy(update={
-                        "target": "source",
-                        "reference": "destination",
-                        "region": "placement_region",
-                    })
-            target_entity = getattr(operation, raw.target) if raw.target else None
-            reference_entity = getattr(operation, raw.reference) if raw.reference else None
+                    target_role, reference_role = "source", "destination"
+            for role in (target_role, reference_role):
+                if role is not None and role not in operation_valid_roles(operation):
+                    raise _role_error(operation, role, raw)
+            target_entity = getattr(operation, target_role) if target_role else None
+            reference_entity = getattr(operation, reference_role) if reference_role else None
             target = grounded.get(target_entity) if target_entity else None
             reference = grounded.get(reference_entity) if reference_entity else None
-            if raw.target and target is None:
-                raise ValueError(f"operation {operation.operation_id} has no {raw.target} object")
-            if raw.reference and reference is None:
-                raise ValueError(f"operation {operation.operation_id} has no {raw.reference} object")
+            if target_role and target is None:
+                raise _role_error(operation, target_role, raw)
+            if reference_role and reference is None:
+                raise _role_error(operation, reference_role, raw)
             step_id = f"step-{len(steps) + 1}"
             steps.append(SkillStep(
                 step_id=step_id, operation_id=operation.operation_id, skill_name=raw.skill,

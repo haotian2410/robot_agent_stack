@@ -486,7 +486,7 @@ def test_qwen_http_pipeline_level4_shape_with_local_transport(monkeypatch, tmp_p
             "detections": [{"entity": "button_01", "bbox": [710, 412, 867, 525]}],
         },
         "skill_planning": {
-            "operations": [{"id": "op-1", "steps": [
+            "operations": [{"id": "op-1", "intent": "按下红色按钮。", "steps": [
                 {"skill": "locate", "target": "target"},
                 {"skill": "move", "target": "target", "region": "button_surface"},
                 {"skill": "press", "target": "target"},

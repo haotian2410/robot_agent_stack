@@ -24,9 +24,19 @@ class PlannerEntity(_StrictModel):
     relations: tuple[str, ...] = ()
 
 
+class PlannerRoleBindings(_StrictModel):
+    source: str | None = None
+    destination: str | None = None
+    target: str | None = None
+    reference: str | None = None
+
+
 class PlannerOperation(_StrictModel):
     id: str
     type: str
+    semantic_intent: str = Field(min_length=1, max_length=300)
+    role_bindings: PlannerRoleBindings = Field(default_factory=PlannerRoleBindings)
+    valid_roles: tuple[str, ...] = ()
     source: str | None = None
     destination: str | None = None
     target: str | None = None
@@ -48,6 +58,8 @@ class PlannerInitialState(_StrictModel):
 
 
 class PlannerContext(_StrictModel):
+    instruction: str
+    semantic_summary: str = Field(min_length=1, max_length=1000)
     operations: list[PlannerOperation]
     entities: list[PlannerEntity]
     goals: list[PlannerGoal] = Field(default_factory=list)
@@ -106,18 +118,41 @@ def build_planner_context(
             if acting in relevant and contact in relevant:
                 projected[contact]["relations"].append(f"part_of:{acting}")
 
-    operations = [PlannerOperation(
-        id=operation.operation_id,
-        type=operation.task_type.value,
-        source=operation.source,
-        destination=operation.destination,
-        target=operation.target,
-        reference=operation.reference,
-        depends_on=list(operation.depends_on),
-        motion_direction=operation.motion_direction.value if operation.motion_direction else None,
-        distance_m=operation.distance_m,
-        placement_target=operation.placement_target.model_dump(mode="json") if operation.placement_target else None,
-    ) for operation in task.operations]
+    operations = []
+    for operation in task.operations:
+        bindings = {
+            role: getattr(operation, role)
+            for role in ("source", "destination", "target", "reference")
+        }
+        valid_roles = tuple(role for role, value in bindings.items() if value is not None)
+        source_name = grounded.get(operation.source).semantic_name if operation.source in grounded else operation.source
+        destination_name = grounded.get(operation.destination).semantic_name if operation.destination in grounded else operation.destination
+        target_name = grounded.get(operation.target).semantic_name if operation.target in grounded else operation.target
+        if operation.task_type.value == "pick_and_place":
+            semantic_intent = f"搬运 {source_name}，并将其放置到 {destination_name}。"
+            if operation.placement_target is not None:
+                placement = operation.placement_target
+                reference_name = grounded.get(placement.reference).semantic_name if placement.reference in grounded else placement.reference
+                semantic_intent = f"搬运 {source_name}，并将其放置到 {reference_name or destination_name} 附近。" if placement.relation and placement.relation.value == "near" else semantic_intent
+        elif operation.task_type.value in {"open", "close"}:
+            semantic_intent = f"对 {target_name} 执行 {operation.task_type.value} 操作。"
+        else:
+            semantic_intent = f"对 {target_name or source_name or destination_name} 执行 {operation.task_type.value} 操作。"
+        operations.append(PlannerOperation(
+            id=operation.operation_id,
+            type=operation.task_type.value,
+            semantic_intent=semantic_intent,
+            role_bindings=PlannerRoleBindings(**bindings),
+            valid_roles=valid_roles,
+            source=operation.source,
+            destination=operation.destination,
+            target=operation.target,
+            reference=operation.reference,
+            depends_on=list(operation.depends_on),
+            motion_direction=operation.motion_direction.value if operation.motion_direction else None,
+            distance_m=operation.distance_m,
+            placement_target=operation.placement_target.model_dump(mode="json") if operation.placement_target else None,
+        ))
     goals = [PlannerGoal(
         relation=relation.relation.value,
         subject=relation.subject,
@@ -127,7 +162,15 @@ def build_planner_context(
         **projected[entity_id],
         "relations": tuple(dict.fromkeys(projected[entity_id]["relations"])),
     }) for entity_id in grounded if entity_id in projected]
-    return PlannerContext(operations=operations, entities=entities, goals=goals, initial_state=initial_state or PlannerInitialState())
+    from .semantic_summary import build_semantic_summary
+    return PlannerContext(
+        instruction=task.instruction,
+        semantic_summary=build_semantic_summary(task),
+        operations=operations,
+        entities=entities,
+        goals=goals,
+        initial_state=initial_state or PlannerInitialState(),
+    )
 
 
 def _load_registry(value: str | Path | dict[str, Any] | None) -> dict[str, Any]:

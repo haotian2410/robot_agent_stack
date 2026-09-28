@@ -313,9 +313,12 @@ class PipelineEngine:
                     json.dumps(context.model_dump(mode="json"), ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+                summary_path = out / "semantic_summary.txt"
+                summary_path.write_text(context.semantic_summary + "\n", encoding="utf-8")
                 catalog_path.write_text(catalog + "\n", encoding="utf-8")
                 planner_artifacts.update({
                     "planner_context.json": str(context_path),
+                    "semantic_summary.txt": str(summary_path),
                     "planner_skill_catalog.txt": str(catalog_path),
                 })
                 budget.consume("skill_planning")
@@ -330,7 +333,22 @@ class PipelineEngine:
                     encoding="utf-8",
                 )
                 planner_artifacts["raw_skill_plan.json"] = str(raw_path)
-                skill = enrich_skill_plan(raw_plan, task)
+                repairs: list[dict] = []
+                skill = enrich_skill_plan(raw_plan, task, repairs=repairs)
+                repairs_path = out / "planner_repairs.json"
+                repairs_path.write_text(json.dumps(repairs, ensure_ascii=False, indent=2), encoding="utf-8")
+                normalized_path = out / "normalized_skill_plan.json"
+                normalized_path.write_text(json.dumps(skill.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
+                metadata_path = out / "planner_metadata.json"
+                metadata_path.write_text(json.dumps({"planner": "qwen", "semantic_context_version": 2, "role_schema": "operation_scoped", "repair_count": len(repairs)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                quality_path = out / "planner_quality.json"
+                quality_path.write_text(json.dumps({"schema_valid": True, "intent_present": all(bool(item.intent.strip()) for item in raw_plan.operations), "role_invalid_count": 0, "role_repair_count": len(repairs), "operation_count": len(raw_plan.operations)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                planner_artifacts.update({
+                    "planner_repairs.json": str(repairs_path),
+                    "normalized_skill_plan.json": str(normalized_path),
+                    "planner_metadata.json": str(metadata_path),
+                    "planner_quality.json": str(quality_path),
+                })
                 validate_semantic_plan(skill, task, context, REGISTRY)
                 validation_path = out / "semantic_plan_validation.json"
                 validation_path.write_text(json.dumps({"status": "accepted"}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -341,6 +359,13 @@ class PipelineEngine:
                 result.artifacts["raw_task_understanding.txt"] = str(out / "raw_task_understanding.txt")
             result.artifacts["normalized_task_parse.json"] = str(normalized_task_path)
             result.artifacts["explicit_semantic_evidence.json"] = str(evidence_path)
+            if planner_used == "recipe":
+                metadata_path = out / "planner_metadata.json"
+                metadata_path.write_text(json.dumps({"planner": "recipe", "semantic_context_version": 2, "role_schema": "operation_scoped", "repair_count": 0}, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.artifacts["planner_metadata.json"] = str(metadata_path)
+                quality_path = out / "planner_quality.json"
+                quality_path.write_text(json.dumps({"schema_valid": True, "intent_present": True, "role_invalid_count": 0, "role_repair_count": 0, "operation_count": len(task.operations)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                result.artifacts["planner_quality.json"] = str(quality_path)
             if "validation_path" in locals():
                 result.artifacts["semantic_plan_validation.json"] = str(validation_path)
             if intent.semantic_repairs:

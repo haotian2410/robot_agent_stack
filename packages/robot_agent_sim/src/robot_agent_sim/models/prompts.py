@@ -97,21 +97,44 @@ bbox=[ymin,xmin,ymax,xmax]，整数范围 0..1000；同一 entity 可以有多�
 只输出 entity 和 bbox；不要输出 detection id、object_id、世界坐标、动作、置信度或解释。"""
 
 
-SKILL_PLANNING_PROMPT = """你是机器人高层技能规划器。
+SKILL_PLANNING_PROMPT = """你是机器人高层 Atomic Skill 规划器。
 
-根据 operations 中的高层任务目标、task-relevant entities 的 category/affordances/semantic regions，以及 Atomic Skill Catalog 中每个技能的语义、preconditions 和 effects，自主组合 Atomic Skills 完成每个 operation。
-初始状态在 initial_state 中给出。如果目标已经处于 held_entity 状态，不要重复 grasp；直接完成后续移动/释放目标。
+用户任务已经由前一阶段解析，并由 Python 完成语义规范化、对象绑定和高层 operation 构造。你只能为已经确定的 operation 组合 Atomic Skills，不能重新理解或修改用户语义。
 
-规则：
-- high-level operation 只是目标，不是 Atomic Skill；不要假设任何预定义的高层任务 recipe；
-- 只能使用 Atomic Skill Catalog 中存在的技能，使用前必须满足其 affordance 和 preconditions；
-- 必须保持 operation 顺序及其依赖顺序；
-- target/reference/source/destination 只能引用当前 operation 的角色；
-- pick_and_place 的 placement_target 已由上游确定。统一使用 move(..., region="placement_region") 和 release(..., region="placement_region")，不得自行改成 container_interior、relative_region 或生成坐标；具体物理位置由 Python PlacementResolver 决定。
-- 不要重新解释或修改给定 operation type；
-- 不要输出 object_id、step_id、depends_on、XYZ、关节角、轨迹、距离或解释；
-- 输出必须严格满足 SkillPlan LLM schema，且必须覆盖 operations 中的每一个 operation；
-- 顶层始终是一个对象，唯一字段为 operations，其值是 operation 计划数组；每项形如 {"id":"op-...","steps":[{"skill":"...","target":null,"reference":null,"region":null}]}。"""
+## 语义事实和 role
+
+输入中的 instruction、semantic_summary、operation.semantic_intent、role_bindings、valid_roles、placement_target、goals 和 entities 都是已经确认的事实，不得交换、删除、补造或改写。
+
+每个 step 的 target_role/reference_role 填写的是当前 operation 的 role 名称，不是物体名称，也不是自然语言中的“目标/参考物”。只能使用当前 operation.valid_roles 中出现的 role。
+
+如果 valid_roles=["source","destination"]，绝对不能填写 target_role="target" 或 reference_role="reference"；target/reference 是字段名，不是通用占位符。不得输出 object_id、XYZ、世界坐标、关节角、轨迹、距离、step_id、depends_on 或解释。
+
+每个 operation 必须输出非空 intent，简短复述已经确定的语义；intent 只用于审计，不能创造新的对象、关系或执行参数。
+
+## Atomic Skill
+
+只能使用 Atomic Skill Catalog 中存在的技能，并满足其 preconditions、affordances 和 regions。必须完整覆盖 operations，保持 operation id 和顺序，不得新增、删除、合并或调换 operation。
+
+## pick_and_place
+
+placement_target 已由上游确定，不得重新解释。最终放置统一使用 region="placement_region"，具体物理位置由 Python PlacementResolver 决定。
+
+标准步骤及 role 如下：
+1. locate，target_role="source"
+2. move，target_role="source"，region="grasp_region"
+3. grasp，target_role="source"
+4. locate，target_role="destination"
+5. move，target_role="destination"，reference_role="source"，region="placement_region"
+6. release，target_role="source"，reference_role="destination"，region="placement_region"
+
+如果 initial_state.held_entity 已经等于 source，不要重复 locate/move/grasp source，直接完成后续步骤。
+
+## 输出
+
+顶层只能包含 operations。每项格式为：
+{"id":"op-...","intent":"非空语义复述","steps":[{"skill":"...","target_role":"source或其他合法role或null","reference_role":"合法role或null","region":"...或null"}]}。
+
+输出前检查：intent 非空；operation id/顺序完整；每个 role 属于 valid_roles；role_bindings 为 null 的 role 未被使用；placement_target 未被修改；没有物理坐标、距离或轨迹。"""
 
 
 def prompt_payload(value) -> str:

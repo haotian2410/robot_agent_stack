@@ -46,6 +46,11 @@ def test_context_projects_semantics_and_excludes_physics():
     assert "placeable" in by_id["upper_compartment_01"].affordances
     for forbidden in ("position", "quaternion", "joint", "trajectory", "bbox", "body_name"):
         assert forbidden not in payload
+    assert context.instruction == "cabinet"
+    assert context.semantic_summary
+    assert context.operations[1].valid_roles == ("source", "destination")
+    assert context.operations[1].role_bindings.target is None
+    assert context.operations[1].semantic_intent
 
 
 @pytest.mark.parametrize("role", ["source", "target"])
@@ -61,7 +66,7 @@ def test_directional_move_override_preserves_primary_role(role):
         )],
         spatial_relations=[], scene_id="scene",
     )
-    output = SkillPlanLLMOutput(operations=[{"id": "op-1", "steps": []}])
+    output = SkillPlanLLMOutput(operations=[{"id": "op-1", "intent": "操作计划", "steps": []}])
     plan = enrich_skill_plan(output, task)
     assert [step.skill_name for step in plan.steps] == ["locate", "move", "grasp", "move", "release"]
     assert all(step.target_object == "baseball-01" for step in plan.steps)
@@ -88,6 +93,7 @@ def test_qwen_payload_style_placement_move_is_canonicalized_to_destination_host(
     )
     output = SkillPlanLLMOutput(operations=[{
         "id": "op-1",
+        "intent": "抓取苹果并放到棒球旁边。",
         "steps": [
             {"skill": "locate", "target": "source"},
             {"skill": "move", "target": "source", "region": "grasp_region"},
@@ -106,6 +112,48 @@ def test_qwen_payload_style_placement_move_is_canonicalized_to_destination_host(
     assert placement_move.reference_object == "apple-01"
     assert placement_release.target_object == "apple-01"
     assert placement_release.reference_object == "baseball-01"
+
+
+def test_qwen_generic_target_placeholder_is_safely_repaired_for_pick_and_place():
+    task = GroundedTask(
+        instruction="把棒球放到苹果旁边",
+        task_types=[TaskType.PICK_AND_PLACE],
+        entities=[
+            GroundedEntity(entity_id="baseball", semantic_name="baseball", object_id="baseball-01", grounding_method="asset_scene_binding"),
+            GroundedEntity(entity_id="apple", semantic_name="apple", object_id="apple-01", grounding_method="asset_scene_binding"),
+        ],
+        operations=[Operation(
+            operation_id="op-1", task_type=TaskType.PICK_AND_PLACE,
+            source="baseball", destination="apple",
+            placement_target={"kind": "relative_object", "reference": "apple", "relation": "near"},
+        )],
+        spatial_relations=[], scene_id="role-repair",
+    )
+    raw = SkillPlanLLMOutput(operations=[{
+        "id": "op-1", "intent": "抓取棒球并放到苹果旁边。", "steps": [
+            {"skill": "locate", "target_role": "target"},
+            {"skill": "move", "target_role": "target", "region": "grasp_region"},
+            {"skill": "grasp", "target_role": "target"},
+        ],
+    }])
+    repairs = []
+    plan = enrich_skill_plan(raw, task, repairs=repairs)
+    assert [step.target_object for step in plan.steps[:3]] == ["baseball-01"] * 3
+    assert [step.target_object for step in plan.steps[3:]] == ["apple-01", "apple-01", "baseball-01"]
+    assert len(repairs) == 3
+    assert all(item["to"] == "source" for item in repairs)
+
+
+def test_operation_role_invalid_is_not_repaired_for_open():
+    task = cabinet_task().model_copy(update={
+        "operations": [Operation(operation_id="op-1", task_type=TaskType.OPEN, target="cabinet_door_01", reference="cabinet_handle_01")],
+        "task_types": [TaskType.OPEN],
+    })
+    raw = SkillPlanLLMOutput(operations=[{
+        "id": "op-1", "intent": "打开柜门。", "steps": [{"skill": "locate", "target_role": "source"}],
+    }])
+    with pytest.raises(ValueError, match="planner_role_invalid"):
+        enrich_skill_plan(raw, task)
 
 
 def test_catalog_and_prompt_do_not_leak_recipes():
@@ -157,7 +205,7 @@ def test_root_single_operation_is_rejected_and_raw_is_retained(monkeypatch):
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": '{"id":"op-1","steps":[]}'}}], "usage": {"prompt_tokens": 17, "completion_tokens": 9}}
+            return {"choices": [{"message": {"content": '{"id":"op-1","intent":"","steps":[]}'}}], "usage": {"prompt_tokens": 17, "completion_tokens": 9}}
 
     monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", lambda *args, **kwargs: Response())
     provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
@@ -165,7 +213,7 @@ def test_root_single_operation_is_rejected_and_raw_is_retained(monkeypatch):
     context = build_planner_context(cabinet_task(), SIDECAR)
     with pytest.raises(ValidationError):
         provider.plan(SkillPlanningRequest(context=context, skill_catalog=REGISTRY.prompt_catalog()))
-    assert provider.last_raw_values["skill_planning"] == {"id": "op-1", "steps": []}
+    assert provider.last_raw_values["skill_planning"] == {"id": "op-1", "intent": "", "steps": []}
     assert provider.calls[-1]["prompt_tokens"] == 17
 
 
@@ -196,7 +244,7 @@ def test_qwen_response_finish_reason_is_recorded(monkeypatch):
         status_code = 200
         def raise_for_status(self): return None
         def json(self):
-            return {"choices": [{"message": {"content": '{"id":"op-1","steps":[]}'}, "finish_reason": "length"}], "usage": {"prompt_tokens": 4, "completion_tokens": 8}}
+            return {"choices": [{"message": {"content": '{"id":"op-1","intent":"操作计划","steps":[]}'}, "finish_reason": "length"}], "usage": {"prompt_tokens": 4, "completion_tokens": 8}}
     monkeypatch.setattr("robot_agent_sim.models.qwen_http.httpx.post", lambda *args, **kwargs: Response())
     provider = QwenHTTPProvider("http://localhost/v1", "Qwen", use_structured_output="off")
     from robot_agent_sim.models.skill_planning import SkillPlanningRequest
@@ -208,7 +256,7 @@ def test_qwen_response_finish_reason_is_recorded(monkeypatch):
 def test_pipeline_failure_writes_raw_plan_and_usage(tmp_path):
     class BrokenPlanner:
         calls = [{"stage": "skill_planning", "status": "succeeded", "prompt_tokens": 23, "completion_tokens": 11, "finish_reason": "length"}]
-        last_raw_values = {"skill_planning": {"id": "op-1", "steps": []}}
+        last_raw_values = {"skill_planning": {"id": "op-1", "intent": "操作计划", "steps": []}}
 
         def plan(self, request):
             SkillPlanLLMOutput.model_validate(self.last_raw_values["skill_planning"])

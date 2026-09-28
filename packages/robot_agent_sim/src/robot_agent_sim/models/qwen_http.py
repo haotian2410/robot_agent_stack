@@ -134,6 +134,8 @@ class QwenHTTPProvider:
 
     def plan(self, request):
         content = prompt_payload({
+            "instruction": request.context.instruction,
+            "semantic_summary": request.context.semantic_summary,
             "operations": [item.model_dump(mode="json") for item in request.context.operations],
             "entities": [item.model_dump(mode="json") for item in request.context.entities],
             "goals": [item.model_dump(mode="json") for item in request.context.goals],

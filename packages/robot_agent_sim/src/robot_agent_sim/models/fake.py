@@ -442,6 +442,6 @@ class FakeSkillPlanningProvider:
                 destination="destination" if operation.destination else None,
                 reference="reference" if operation.reference else None,
             )
-            steps = [LLMPlanStep(skill=skill, target=target, reference=reference, region=region) for skill, target, reference, region in RECIPE_DEFINITIONS[operation.type].build(proxy)]
-            plans.append(LLMOperationPlan(id=operation.id, steps=steps))
+            steps = [LLMPlanStep(skill=skill, target_role=target, reference_role=reference, region=region) for skill, target, reference, region in RECIPE_DEFINITIONS[operation.type].build(proxy)]
+            plans.append(LLMOperationPlan(id=operation.id, intent=f"执行 {operation.type} 操作。", steps=steps))
         return SkillPlanLLMOutput(operations=plans)
