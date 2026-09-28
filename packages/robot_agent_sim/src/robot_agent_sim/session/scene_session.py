@@ -354,9 +354,25 @@ class SceneSession:
             # geometry (this matters when an uploaded registry names an object
             # ``blue_cabinet_upper_compartment`` for entity
             # ``upper_compartment_01``).
+            # The semantic planner describes the placement host by its
+            # category/name (for example ``apple``), while operation
+            # expansion has already selected a concrete destination entity
+            # (``apple__01`` -> ``apple_01``).  Resolve both forms here before
+            # the geometry resolver looks up the live registry object.  This
+            # is essential for pairwise instructions such as “两个棒球分别
+            # 放到两个苹果旁边”.
+            destination_aliases = {
+                value for value in (
+                    operation.destination,
+                    destination_entity.entity_id,
+                    destination_entity.semantic_entity_id,
+                    destination_entity.semantic_name,
+                    *destination_entity.aliases,
+                ) if value
+            }
             spec = spec.model_copy(update={
-                "reference": destination_id if spec.reference == operation.destination else spec.reference,
-                "support": destination_id if spec.support == operation.destination else spec.support,
+                "reference": destination_id if spec.reference in destination_aliases else spec.reference,
+                "support": destination_id if spec.support in destination_aliases else spec.support,
             })
         resolved = PlacementResolver().resolve(
             spec,
