@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from ..contracts.task_intent import SpatialRelationType
+from .support_surfaces import WORK_TABLE
 
 
 class SceneConstraintError(ValueError):
@@ -14,13 +15,19 @@ class SceneConstraintError(ValueError):
 def validate_generated_scene(intent, registry) -> None:
     objects = {item.object_id: item for item in registry.objects}
     positions = {object_id: item.position for object_id, item in objects.items()}
+    # ``__table__`` is a semantic frame backed by the generated work_table
+    # body, not a spawned SceneObject.  It still participates in corner and
+    # support-frame constraints.
+    positions.setdefault(WORK_TABLE.surface_id, WORK_TABLE.position)
     for relation in intent.spatial_relations:
         if relation.scope == "goal":
             continue
         subject_id = registry.bindings.get(relation.subject)
         reference_id = registry.bindings.get(relation.reference) if relation.reference else None
-        if subject_id is None or (relation.reference and reference_id is None):
+        if subject_id is None or (relation.reference and reference_id is None and relation.reference != WORK_TABLE.surface_id):
             raise SceneConstraintError(f"scene_generation_constraint_failed: missing binding for {relation.subject}")
+        if relation.reference == WORK_TABLE.surface_id:
+            reference_id = WORK_TABLE.surface_id
         if relation.relation in {
             SpatialRelationType.NEAREST, SpatialRelationType.FARTHEST,
             SpatialRelationType.LEFTMOST, SpatialRelationType.RIGHTMOST,

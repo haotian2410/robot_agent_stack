@@ -165,6 +165,52 @@ def test_corner_pick_and_place_layout_uses_both_axes(tmp_path):
     assert objects["basket_01"]["position"][1] < 0
 
 
+def test_table_relative_corner_constraints_are_binary_and_compose(tmp_path):
+    parsed = TaskParseLLMOutput(
+        status="accepted",
+        entities=[
+            ParseEntity(id="apple", name="apple", category="fruit"),
+            ParseEntity(id="banana", name="banana", category="fruit"),
+            ParseEntity(id="table", name="table", category="furniture"),
+        ],
+        operations=[ParseOperation(
+            type="pick_and_place",
+            source="apple",
+            destination="banana",
+            placement_target={"kind": "relative_object", "reference": "banana", "relation": "near"},
+        )],
+        relations=[
+            {"scope": "selection", "subject": "apple", "relation": "left", "reference": "table"},
+            {"scope": "selection", "subject": "apple", "relation": "back", "reference": "table"},
+            {"scope": "selection", "subject": "banana", "relation": "right", "reference": "table"},
+            {"scope": "selection", "subject": "banana", "relation": "front", "reference": "table"},
+        ],
+    )
+
+    class Provider:
+        def understand(self, request):
+            return parsed
+
+    intent = enrich_task(parsed, "把桌子左下角的苹果放到桌子右上角的香蕉旁边")
+    assert intent.status == TaskStatus.ACCEPTED
+    assert {(item.relation, item.reference) for item in intent.spatial_relations if item.scope == "selection"} == {
+        (SpatialRelationType.LEFT_OF, "__table__"),
+        (SpatialRelationType.BEHIND, "__table__"),
+        (SpatialRelationType.RIGHT_OF, "__table__"),
+        (SpatialRelationType.FRONT_OF, "__table__"),
+    }
+    result = PipelineEngine(understanding=Provider()).plan(
+        "把桌子左下角的苹果放到桌子右上角的香蕉旁边",
+        robot="ur5e",
+        planner="recipe",
+        output_dir=tmp_path,
+    )
+    assert result.status == "accepted"
+    positions = {item["entity_id"]: item["position"] for item in result.scene_registry["objects"]}
+    assert positions["apple"][:2] == [-0.22, -0.38]
+    assert positions["banana"][:2] == [0.22, 0.38]
+
+
 @pytest.mark.parametrize(
     ("phrase", "expected_xy"),
     [

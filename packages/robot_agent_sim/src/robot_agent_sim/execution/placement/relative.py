@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ...contracts.placement import PlacementTargetKind, ResolvedPlacement
 from ...contracts.task_intent import SpatialRelationType
+from ...scene.support_surfaces import WORKSPACE_X, WORKSPACE_Y
 from .geometry import aabb, overlap
 from .feasibility import PlacementFeasibilityChecker, is_feasible
 
@@ -27,9 +28,23 @@ def resolve_relative(*, source_id, reference_id, relation, source_dimensions, wo
     else:
         offsets_list = [offsets[relation]]
     candidates = []
+    source_state = world_state.objects.get(source_id)
     for offset in offsets_list:
         position = tuple(reference_state.position[index] + offset[index] for index in range(3))
         if relation == SpatialRelationType.BELOW and position[2] < source_dimensions[2] / 2:
+            continue
+        # Relative placement is still a tabletop placement in the current
+        # UR5e scene.  Reject a candidate whose complete footprint crosses
+        # the workspace edge before asking IK to solve it; otherwise the
+        # deterministic first ``near`` side can be an unreachable outer edge.
+        half_x = source_dimensions[0] / 2
+        half_y = source_dimensions[1] / 2
+        if (
+            position[0] - half_x < WORKSPACE_X[0]
+            or position[0] + half_x > WORKSPACE_X[1]
+            or position[1] - half_y < WORKSPACE_Y[0]
+            or position[1] + half_y > WORKSPACE_Y[1]
+        ):
             continue
         candidate_box = aabb(position, source_dimensions)
         if any(
@@ -44,6 +59,16 @@ def resolve_relative(*, source_id, reference_id, relation, source_dimensions, wo
         candidates.append((position, relation.value if relation != SpatialRelationType.NEAR else "near_candidate"))
     if not candidates:
         raise ValueError(f"placement_no_feasible_candidate: {relation.value}")
+    if source_state is not None:
+        candidates.sort(
+            key=lambda item: (
+                (item[0][0] - source_state.position[0]) ** 2
+                + (item[0][1] - source_state.position[1]) ** 2,
+                ("right_of", "left_of", "front_of", "behind").index(item[1])
+                if item[1] in {"right_of", "left_of", "front_of", "behind"}
+                else 0,
+            )
+        )
     position, chosen = candidates[0]
     return ResolvedPlacement(
         kind=PlacementTargetKind.RELATIVE_OBJECT,

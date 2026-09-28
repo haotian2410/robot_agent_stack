@@ -246,6 +246,53 @@ def _normalize_cardinality(parsed: TaskParseLLMOutput, instruction: str) -> tupl
     return result, repairs
 
 
+def _normalize_support_relative_relations(
+    parsed: TaskParseLLMOutput,
+) -> tuple[TaskParseLLMOutput, list[dict[str, object]]]:
+    """Turn table-relative unary directions into binary scene constraints.
+
+    The compact ``left``/``back`` relations are valid selectors without a
+    reference (for example “the left apple”).  Qwen also uses that vocabulary
+    for phrases such as “the apple in the table's lower-left corner”, where a
+    support surface is explicitly the frame of reference.  Keep the strict
+    contract for arbitrary references, but canonicalize support-frame uses to
+    ``left_of``/``behind`` so they can be grounded and composed safely.
+    """
+    unary_to_binary = {
+        SpatialRelationType.LEFT: SpatialRelationType.LEFT_OF,
+        SpatialRelationType.RIGHT: SpatialRelationType.RIGHT_OF,
+        SpatialRelationType.FRONT: SpatialRelationType.FRONT_OF,
+        SpatialRelationType.BACK: SpatialRelationType.BEHIND,
+        SpatialRelationType.UP: SpatialRelationType.ABOVE,
+        SpatialRelationType.DOWN: SpatialRelationType.BELOW,
+    }
+    support_categories = {"support_surface", "surface", "table", "shelf", "furniture"}
+    entities = {entity.id: entity for entity in parsed.entities}
+    repairs: list[dict[str, object]] = []
+    relations = []
+    for relation in parsed.relations:
+        reference = entities.get(relation.reference) if relation.reference else None
+        is_support_reference = reference is not None and (
+            reference.category.casefold() in support_categories
+            or reference.name.casefold() in {"table", "桌子", "桌面", "台面", "shelf", "架子"}
+        )
+        replacement = unary_to_binary.get(relation.relation)
+        if relation.reference and replacement is not None and is_support_reference:
+            relations.append(relation.model_copy(update={"relation": replacement}))
+            repairs.append({
+                "type": "support_frame_relation_repair",
+                "subject": relation.subject,
+                "reference": relation.reference,
+                "from": relation.relation.value,
+                "to": replacement.value,
+            })
+        else:
+            relations.append(relation)
+    if relations == parsed.relations:
+        return parsed, repairs
+    return parsed.model_copy(update={"relations": relations}), repairs
+
+
 def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: MotionPolicy | None = None) -> TaskIntent:
     policy = motion_policy or MotionPolicy()
     parsed, quantity_repairs = _normalize_cardinality(parsed, instruction)
@@ -275,6 +322,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             )
     from ..semantics.placement_normalizer import normalize_placement_operations
     parsed, placement_repairs = normalize_placement_operations(parsed, instruction)
+    parsed, support_relation_repairs = _normalize_support_relative_relations(parsed)
     clarification = next(
         (repair for repair in placement_repairs if repair.get("type") == "placement_clarification_required"),
         None,
@@ -313,7 +361,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
     text_direction, text_distance, text_is_vague = _instruction_motion(instruction)
     has_model_move = any(operation.type == "move" for operation in parsed.operations)
     parsed_move_count = sum(1 for operation in parsed.operations if operation.type == "move")
-    repairs: list[dict[str, object]] = [*quantity_repairs, *missing_operation_repairs, *placement_repairs]
+    repairs: list[dict[str, object]] = [*quantity_repairs, *missing_operation_repairs, *placement_repairs, *support_relation_repairs]
     operations = []
     for index, op in enumerate(parsed.operations):
         # A single grasp/locate result for an explicit displacement is a common

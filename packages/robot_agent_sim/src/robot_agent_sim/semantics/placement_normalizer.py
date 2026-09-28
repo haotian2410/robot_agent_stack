@@ -187,6 +187,17 @@ def normalize_placement_operations(parsed, instruction: str):
             mentions[TABLE_ENTITY] = []
         return TABLE_ENTITY
 
+    # A table can be mentioned only as the frame for a source selector (for
+    # example “桌子左下角的苹果”), not as the placement destination.  Bind it
+    # to the synthetic support frame anyway so scene composition does not try
+    # to resolve ``table`` as an ordinary asset.
+    if table_language and any(
+        entity.name.casefold() in {"table", "桌子", "桌面", "台面", "work_table"}
+        or entity.category.casefold() in _SUPPORT_CATEGORIES
+        for entity in result.entities
+    ):
+        ensure_table()
+
     def relation_for(source: str, destination: str):
         for relation in result.relations:
             if relation.subject == source and relation.reference == destination and relation.relation in {
@@ -257,10 +268,18 @@ def normalize_placement_operations(parsed, instruction: str):
                     "support": destination_id,
                     "reason": "take_out_without_explicit_destination" if not free_language else "explicit_free_space_language",
                 })
-            elif table_language:
+            elif table_language and (
+                destination_id is None
+                or destination_id == TABLE_ENTITY
+                or _is_support(entities.get(destination_id))
+            ):
                 destination_id = ensure_table()
                 chosen_kind = PlacementTargetKind.SUPPORT_SURFACE
-            elif shelf_language:
+            elif shelf_language and (
+                destination_id is None
+                or destination_id == TABLE_ENTITY
+                or _is_support(entities.get(destination_id))
+            ):
                 destination_entity = entities.get(destination_id)
                 if not _is_support(destination_entity) or destination_id == TABLE_ENTITY:
                     repairs.append({"type": "placement_clarification_required", "reason": "named_support_surface_missing", "reference": "shelf"})
@@ -313,15 +332,27 @@ def normalize_placement_operations(parsed, instruction: str):
             continue
         destination_id = operation.destination
         destination = entities.get(destination_id) if destination_id else None
-        if free_language and (destination is None or not _is_container(destination) or table_language):
+        if free_language and (
+            destination is None
+            or destination_id == TABLE_ENTITY
+            or _is_support(destination)
+        ):
             destination_id = ensure_table()
             operation.destination = destination_id
             spec = PlacementTargetSpec(kind=PlacementTargetKind.FREE_SPACE, reference=destination_id)
-        elif table_language:
+        elif table_language and (
+            destination is None
+            or destination_id == TABLE_ENTITY
+            or _is_support(destination)
+        ):
             destination_id = ensure_table()
             operation.destination = destination_id
             spec = PlacementTargetSpec(kind=PlacementTargetKind.SUPPORT_SURFACE, reference=destination_id, relation=SpatialRelationType.ON)
-        elif shelf_language:
+        elif shelf_language and (
+            destination is None
+            or destination_id == TABLE_ENTITY
+            or _is_support(destination)
+        ):
             if _is_support(destination) and destination_id != TABLE_ENTITY:
                 spec = PlacementTargetSpec(kind=PlacementTargetKind.SUPPORT_SURFACE, reference=destination_id, relation=SpatialRelationType.ON)
             else:
@@ -361,10 +392,19 @@ def normalize_placement_operations(parsed, instruction: str):
         elif operation.placement_target.kind == PlacementTargetKind.RELATIVE_OBJECT:
             result.relations = [
                 relation for relation in result.relations
-                if not (relation.subject in {operation.source, operation.destination} and relation.scope == "selection" and relation.relation in {
-                    SpatialRelationType.LEFT, SpatialRelationType.RIGHT,
-                    SpatialRelationType.FRONT, SpatialRelationType.BACK,
-                })
+                if not (
+                    relation.subject in {operation.source, operation.destination}
+                    and relation.scope == "selection"
+                    and relation.relation in {
+                        SpatialRelationType.LEFT, SpatialRelationType.RIGHT,
+                        SpatialRelationType.FRONT, SpatialRelationType.BACK,
+                    }
+                    # Keep source-selection constraints such as “table's
+                    # lower-left apple”; only remove stale unconstrained
+                    # selectors or selectors that were actually about the
+                    # placement destination.
+                    and (relation.reference is None or relation.reference == operation.destination)
+                )
             ]
             if not any(relation.subject == operation.source and relation.reference == operation.destination and relation.relation == operation.placement_target.relation for relation in result.relations):
                 result.relations.append(ParseRelation(scope="goal", subject=operation.source, relation=operation.placement_target.relation, reference=operation.destination))

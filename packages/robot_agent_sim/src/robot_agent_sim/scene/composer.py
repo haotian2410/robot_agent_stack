@@ -7,7 +7,7 @@ import re
 from ..contracts.task_intent import Direction, QuantityMode, SpatialRelationType
 from .constraints import SceneConstraintError
 from .registry import SceneObject, SceneRegistry
-from .support_surfaces import WORKSPACE_X, WORKSPACE_Y
+from .support_surfaces import WORK_TABLE, WORKSPACE_X, WORKSPACE_Y
 from ..execution.placement_allocator import allocate_interior_slots
 
 MIN_GAP_M = 0.04
@@ -75,7 +75,29 @@ class SceneComposer:
             }:
                 continue
             subject_dimensions = assets[relation.subject].dimensions_m or _primitive_dimensions(assets[relation.subject].model_name)
-            reference_dimensions = assets[relation.reference].dimensions_m or _primitive_dimensions(assets[relation.reference].model_name)
+            if relation.reference == "__table__":
+                reference_dimensions = WORK_TABLE.dimensions_m
+            else:
+                reference_dimensions = assets[relation.reference].dimensions_m or _primitive_dimensions(assets[relation.reference].model_name)
+            if relation.reference == "__table__" and relation.relation in {
+                SpatialRelationType.LEFT_OF, SpatialRelationType.RIGHT_OF,
+                SpatialRelationType.FRONT_OF, SpatialRelationType.BEHIND,
+            }:
+                # A corner selector can contain two independent constraints
+                # (for example left_of + behind the table).  Accumulate both
+                # axes instead of letting the first relation win via
+                # ``setdefault``.
+                point = list(preferred_by_entity.get(relation.subject, WORK_TABLE.position))
+                if relation.relation == SpatialRelationType.LEFT_OF:
+                    point[0] = WORK_TABLE.position[0] - 0.22
+                elif relation.relation == SpatialRelationType.RIGHT_OF:
+                    point[0] = WORK_TABLE.position[0] + 0.22
+                elif relation.relation == SpatialRelationType.FRONT_OF:
+                    point[1] = WORK_TABLE.position[1] + 0.38
+                elif relation.relation == SpatialRelationType.BEHIND:
+                    point[1] = WORK_TABLE.position[1] - 0.38
+                preferred_by_entity[relation.subject] = tuple(point)
+                continue
             subject_position, reference_position = self._relation_pair_positions(
                 relation.relation, subject_dimensions, reference_dimensions
             )
