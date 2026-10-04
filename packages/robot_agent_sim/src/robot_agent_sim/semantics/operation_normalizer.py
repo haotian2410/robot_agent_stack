@@ -11,6 +11,7 @@ def operation_signature(operation):
         operation.reference,
         operation.motion_direction,
         operation.distance_m,
+        operation.motion_scale,
     )
 
 

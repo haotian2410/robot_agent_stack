@@ -76,7 +76,11 @@ def test_directional_move_recipe_grasps_moves_and_releases(tmp_path):
         "把苹果向右移动一点", robot="ur5e", planner="recipe", output_dir=tmp_path,
     )
     assert result.task_intent["raw_direction"] == "right"
-    assert result.task_intent["operations"][0]["distance_m"] == 0.1
+    assert result.task_intent["operations"][0]["distance_m"] is None
+    assert result.task_intent["operations"][0]["motion_scale"] == "small"
+    assert result.grounded_task["operations"][0]["distance_m"] > 0
+    assert result.grounded_task["operations"][0]["motion_scale"] is None
+    assert (tmp_path / "motion_scale_resolution.json").is_file()
     assert [step["skill_name"] for step in result.skill_plan["steps"]] == [
         "locate", "move", "grasp", "move", "release"
     ]

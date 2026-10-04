@@ -75,19 +75,25 @@ class MujocoSceneBackend:
                     # contact point on the tabletop.
                     values = [float(v) for v in child.get("pos").split()]
                     child.set("pos", " ".join(str(v) for v in (values[0]-0.525, values[1], values[2]-0.6)))
+            from ...scene.support_surfaces import TABLE_CAMERA, WORK_TABLE
+            camera = world.find("camera[@name='scene_camera']")
+            if camera is not None:
+                camera.set("pos", " ".join(str(v) for v in TABLE_CAMERA.world_position(WORK_TABLE)))
+                camera.set("fovy", str(TABLE_CAMERA.fovy_deg))
             return
         link0 = world.find("body[@name='link0']")
         if link0 is not None: link0.set("pos", "-0.525 0 -0.1")
         ET.SubElement(world, "geom", name="ground", type="plane", size="3 3 0.1", pos="0 0 -0.6", rgba="0.82 0.84 0.88 1")
         # The tabletop upper surface is z=0 in the public tabletop-centered
         # frame; task-object body positions are the contact locations.
-        from ...scene.support_surfaces import WORK_TABLE
+        from ...scene.support_surfaces import TABLE_CAMERA, WORK_TABLE
         table = ET.SubElement(world, "body", name=WORK_TABLE.body_name, pos=" ".join(str(v) for v in WORK_TABLE.position))
         half_x, half_y, half_z = (value / 2 for value in WORK_TABLE.dimensions_m)
         # WORK_TABLE.position is the public contact plane, so the tabletop
         # box is centred below it and its upper surface is exactly z=0.
         ET.SubElement(table, "geom", name="work_table_top", type="box", pos=f"0 0 {-half_z}", size=f"{half_x} {half_y} {WORK_TABLE.thickness_m / 2}", rgba="0.48 0.28 0.12 1")
-        ET.SubElement(world, "camera", name="scene_camera", pos="0 0 1.5", quat="1 0 0 0", fovy="45")
+        camera_position = TABLE_CAMERA.world_position(WORK_TABLE)
+        ET.SubElement(world, "camera", name="scene_camera", pos=" ".join(str(v) for v in camera_position), quat="1 0 0 0", fovy=str(TABLE_CAMERA.fovy_deg))
     @staticmethod
     def _add_asset(asset, record):
         if record.source != "mesh": return

@@ -10,7 +10,7 @@ from robot_agent_sim.models.task_understanding import (
     enrich_task,
 )
 from robot_agent_sim.pipeline.engine import PipelineEngine
-from robot_agent_sim.contracts.task_intent import SpatialRelationType, TaskStatus, TaskType
+from robot_agent_sim.contracts.task_intent import MotionScale, SpatialRelationType, TaskStatus, TaskType
 from robot_agent_sim.models.prompts import TASK_UNDERSTANDING_PROMPT
 
 
@@ -42,7 +42,8 @@ def test_explicit_displacement_repairs_incomplete_model_grasp_parse():
     assert intent.operations[0].task_type == TaskType.MOVE
     assert intent.operations[0].target == "apple_01"
     assert intent.operations[0].motion_direction == "right"
-    assert intent.operations[0].distance_m == 0.10
+    assert intent.operations[0].distance_m is None
+    assert intent.operations[0].motion_scale == MotionScale.SMALL
 
 
 def test_explicit_displacement_recovers_metric_distance():

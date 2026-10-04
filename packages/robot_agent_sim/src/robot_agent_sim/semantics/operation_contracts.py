@@ -40,10 +40,14 @@ def validate_operation_contract(operation) -> None:
             raise ValueError("task_semantic_invalid: placement reference must match destination")
     if task_type in {"open", "close"} and operation.target == operation.reference:
         raise ValueError(f"task_semantic_invalid: {task_type} target and reference must differ")
-    if task_type != "move" and (operation.motion_direction is not None or operation.distance_m is not None):
+    if task_type != "move" and (operation.motion_direction is not None or operation.distance_m is not None or operation.motion_scale is not None):
         raise ValueError(f"task_semantic_invalid: motion fields are only valid for move")
     if operation.distance_m is not None and operation.motion_direction is None:
         raise ValueError("task_semantic_invalid: distance_m requires motion_direction")
+    if operation.motion_scale is not None and operation.motion_direction is None:
+        raise ValueError("task_semantic_invalid: motion_scale requires motion_direction")
+    if operation.motion_scale is not None and operation.distance_m is not None:
+        raise ValueError("task_semantic_invalid: use either motion_scale or distance_m")
 
 
 _CONFLICTS = {

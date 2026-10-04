@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 
 TASK_UNDERSTANDING_PROMPT = """你是机器人任务的语义解析器。
@@ -65,8 +66,13 @@ scene_query 只描述 count/existence/position/state，不生成 object_id。
 输入中的 [dialogue_ref=苹果] 是系统注入的稳定单对象指代：建立独立 entity，dialogue_ref=true，不得与同名普通 entity 合并。
 输入中的 [dialogue_ref_set=苹果] 是稳定多对象集合：建立一个集合 entity，dialogue_ref_set=true、quantity_mode=all，不得缩减为其中一个对象。operation 和 relation 可引用该集合。
 
-## 11. 距离
-“向右移动5厘米”必须保留 motion_direction=right、distance_m=0.05；“向右移动一点”保留 direction=right、distance_m=null，由 Python MotionPolicy 决定。多个 move 的方向和距离必须绑定到各自 operation，不得依赖顶层广播。
+## 11. 距离和模糊移动尺度
+“向右移动5厘米”必须保留 motion_direction=right、distance_m=0.05、motion_scale=null。
+没有明确数值时不要猜米数：
+- “一点/稍微/轻微”→ motion_scale=small；
+- “一些/一段/适中”→ motion_scale=medium；
+- “大幅/很多/很远”→ motion_scale=large。
+此时 distance_m 必须为 null。Python 会在具体物体 grounding 后，按该物体沿移动方向的模型长度乘以 10%、50% 或 200% 转换为米数。多个 move 的方向、距离和尺度必须绑定到各自 operation，不得依赖顶层广播。
 
 ## 12. 输出忠实性检查
 输出前检查：明确数量是否一致；是否把 count=N 变成1；是否无理由拆成同名 entity；多个同名 entity 是否真有不同角色；是否把多动作对象变成 candidate_pool；分别关系是否保留；operation role 是否遗漏；是否把 selector 当 motion；是否创造 relation；是否删除 operation；是否因执行能力降低原始语义。
@@ -135,6 +141,20 @@ placement_target 已由上游确定，不得重新解释。最终放置统一使
 {"id":"op-...","intent":"非空语义复述","steps":[{"skill":"...","target_role":"source或其他合法role或null","reference_role":"合法role或null","region":"...或null"}]}。
 
 输出前检查：intent 非空；operation id/顺序完整；每个 role 属于 valid_roles；role_bindings 为 null 的 role 未被使用；placement_target 未被修改；没有物理坐标、距离或轨迹。"""
+
+_PROMPT_DIR = Path(__file__).with_name("prompt_templates")
+
+
+def _load_prompt(filename: str, fallback: str) -> str:
+    path = _PROMPT_DIR / filename
+    return path.read_text(encoding="utf-8") if path.is_file() else fallback
+
+
+# Checked-in text files are the runtime source of truth. Embedded strings
+# remain as a source-tree fallback when package data is unavailable.
+TASK_UNDERSTANDING_PROMPT = _load_prompt("task_understanding_v2.txt", TASK_UNDERSTANDING_PROMPT)
+VISION_GROUNDING_PROMPT = _load_prompt("vision_grounding_v1.txt", VISION_GROUNDING_PROMPT)
+SKILL_PLANNING_PROMPT = _load_prompt("skill_planning_v2.txt", SKILL_PLANNING_PROMPT)
 
 
 def prompt_payload(value) -> str:

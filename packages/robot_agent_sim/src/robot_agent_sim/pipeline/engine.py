@@ -32,6 +32,7 @@ from ..planning.context_builder import PlannerInitialState, build_planner_contex
 from ..planning.recipe_planner import RecipePlanner
 from ..planning.semantic_validator import validate_semantic_plan
 from ..planning.task_expander import expand_grounded_task
+from ..planning.motion_scale import resolve_motion_scales
 from ..scene.composer import SceneComposer
 from ..scene.support_surfaces import WORK_TABLE, WORKSPACE_X, WORKSPACE_Y
 from ..semantics.placement_normalizer import TABLE_ENTITY
@@ -291,6 +292,12 @@ class PipelineEngine:
                 }
                 assignment_path = out / "assignment_plan.json"
                 assignment_path.write_text(json.dumps(assignment_plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            task, motion_scale_records = resolve_motion_scales(task, registry, self.motion_policy)
+            if motion_scale_records:
+                motion_scale_path = out / "motion_scale_resolution.json"
+                motion_scale_path.write_text(json.dumps(motion_scale_records, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                motion_scale_path = None
             recipe_supported = RecipePlanner.supports(task)
             if planner == "recipe" or (planner == "auto" and recipe_supported):
                 if not recipe_supported:
@@ -373,6 +380,8 @@ class PipelineEngine:
                 repairs_path.write_text(json.dumps(intent.semantic_repairs, ensure_ascii=False, indent=2), encoding="utf-8")
                 result.artifacts["semantic_repairs.json"] = str(repairs_path)
             result.artifacts.update(planner_artifacts)
+            if motion_scale_path is not None:
+                result.artifacts["motion_scale_resolution.json"] = str(motion_scale_path)
             if expansion:
                 result.artifacts["operation_expansion.json"] = str(out / "operation_expansion.json")
                 result.artifacts["assignment_plan.json"] = str(out / "assignment_plan.json")

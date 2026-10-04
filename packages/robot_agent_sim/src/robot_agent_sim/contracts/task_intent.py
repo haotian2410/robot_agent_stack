@@ -46,6 +46,12 @@ class Direction(StrEnum):
     DOWN = "down"
 
 
+class MotionScale(StrEnum):
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+
 class TaskEntity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     entity_id: str = Field(pattern=r"^[\w-]+$")
@@ -96,6 +102,7 @@ class Operation(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     motion_direction: Direction | None = None
     distance_m: float | None = Field(default=None, gt=0, le=2)
+    motion_scale: MotionScale | None = None
     placement_target: PlacementTargetSpec | None = None
 
 

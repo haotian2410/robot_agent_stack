@@ -44,6 +44,7 @@ class PlannerOperation(_StrictModel):
     depends_on: list[str] = Field(default_factory=list)
     motion_direction: str | None = None
     distance_m: float | None = None
+    motion_scale: str | None = None
     placement_target: dict[str, Any] | None = None
 
 
@@ -151,6 +152,7 @@ def build_planner_context(
             depends_on=list(operation.depends_on),
             motion_direction=operation.motion_direction.value if operation.motion_direction else None,
             distance_m=operation.distance_m,
+            motion_scale=operation.motion_scale.value if operation.motion_scale else None,
             placement_target=operation.placement_target.model_dump(mode="json") if operation.placement_target else None,
         ))
     goals = [PlannerGoal(

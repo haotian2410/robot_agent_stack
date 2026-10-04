@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contracts.task_intent import Direction, Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
+from ..contracts.task_intent import Direction, MotionScale, Operation, QuantityMode, SpatialRelation, SpatialRelationType, TaskEntity, TaskIntent, TaskType, TaskStatus
 from ..contracts.turn import SceneEditIntent, SceneQueryIntent, SessionControlIntent, TurnKind
 from ..contracts.placement import PlacementTargetSpec
 from .motion_policy import MotionPolicy
@@ -49,6 +49,7 @@ class ParseOperation(StrictModel):
     reference: str | None = None
     motion_direction: str | None = None
     distance_m: float | None = Field(default=None, gt=0, le=2)
+    motion_scale: MotionScale | None = None
     placement_target: PlacementTargetSpec | None = None
 
 
@@ -138,7 +139,7 @@ def _parse_distance_number(value: str) -> float:
 class ExplicitMotionSpan:
     direction: Direction
     distance_m: float | None
-    vague: bool
+    motion_scale: MotionScale | None
     start: int
     end: int
 
@@ -167,17 +168,26 @@ def _extract_explicit_motion_spans(instruction: str) -> list[ExplicitMotionSpan]
             distance_m = _parse_distance_number(distance_match.group(1))
             if distance_match.group(2).casefold() in {"厘米", "cm"}:
                 distance_m /= 100.0
+        phrase = instruction[end:window_end]
+        if distance_m is not None:
+            motion_scale = None
+        elif any(token in phrase for token in ("大幅", "很多", "很远", "远一些", "远一点")):
+            motion_scale = MotionScale.LARGE
+        elif any(token in phrase for token in ("一些", "一段", "适中", "中等", "不少")):
+            motion_scale = MotionScale.MEDIUM
+        else:
+            motion_scale = MotionScale.SMALL
         spans.append(ExplicitMotionSpan(
             direction=direction,
             distance_m=distance_m,
-            vague=distance_m is None,
+            motion_scale=motion_scale,
             start=start,
             end=distance_match.end() if distance_match is not None else end,
         ))
     return spans
 
 
-def _instruction_motion(instruction: str) -> tuple[str | None, float | None, bool]:
+def _instruction_motion(instruction: str) -> tuple[str | None, float | None, MotionScale | None]:
     """Recover an explicit directional displacement from the user's text.
 
     Local language models occasionally classify “把苹果往右移动一点” as a
@@ -190,9 +200,9 @@ def _instruction_motion(instruction: str) -> tuple[str | None, float | None, boo
 
     spans = _extract_explicit_motion_spans(instruction)
     if len(spans) != 1:
-        return None, None, False
+        return None, None, None
     span = spans[0]
-    return span.direction.value, span.distance_m, span.vague
+    return span.direction.value, span.distance_m, span.motion_scale
 
 
 def _normalize_cardinality(parsed: TaskParseLLMOutput, instruction: str) -> tuple[TaskParseLLMOutput, list[dict[str, object]]]:
@@ -358,7 +368,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             instruction=instruction,
             explanation="当前一次任务只支持一个明确的方向移动，请拆成多个连续指令。",
         )
-    text_direction, text_distance, text_is_vague = _instruction_motion(instruction)
+    text_direction, text_distance, text_motion_scale = _instruction_motion(instruction)
     has_model_move = any(operation.type == "move" for operation in parsed.operations)
     parsed_move_count = sum(1 for operation in parsed.operations if operation.type == "move")
     repairs: list[dict[str, object]] = [*quantity_repairs, *missing_operation_repairs, *placement_repairs, *support_relation_repairs]
@@ -376,8 +386,10 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
         operation_type = "move" if promote_to_move else op.type
         model_direction = op.motion_direction or (parsed.raw_direction if operation_type == "move" and parsed_move_count == 1 else None)
         model_distance = op.distance_m or (parsed.distance_m if operation_type == "move" and parsed_move_count == 1 else None)
+        model_scale = op.motion_scale
         direction = model_direction
         distance_m = model_distance
+        motion_scale = model_scale
         if operation_type == "move" and text_direction is not None and len(motion_spans) == 1:
             if model_direction != text_direction and model_direction is not None:
                 repairs.append({"field": f"op-{index + 1}.motion_direction", "model_value": model_direction, "text_value": text_direction, "chosen": text_direction, "reason": "explicit_user_constraint"})
@@ -385,11 +397,16 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             if text_distance is not None and model_distance != text_distance:
                 repairs.append({"field": f"op-{index + 1}.distance_m", "model_value": model_distance, "text_value": text_distance, "chosen": text_distance, "reason": "explicit_user_constraint"})
             distance_m = text_distance
+            motion_scale = text_motion_scale if text_distance is None else None
+        elif operation_type == "move" and index < len(motion_spans):
+            span = motion_spans[index]
+            if distance_m is None:
+                motion_scale = span.motion_scale
         if operation_type == "move" and direction is None and parsed_move_count > 1:
             raise ValueError("task_semantic_invalid: every move operation requires operation-local motion_direction")
-        if operation_type == "move" and direction is not None and distance_m is None:
-            distance_m = policy.default_relative_distance_m
-            repairs.append({"field": f"op-{index + 1}.distance_m", "model_value": None, "chosen": distance_m, "reason": "default_small_motion_policy"})
+        if operation_type == "move" and direction is not None and distance_m is None and motion_scale is None:
+            motion_scale = MotionScale.SMALL
+            repairs.append({"field": f"op-{index + 1}.motion_scale", "model_value": None, "chosen": motion_scale.value, "reason": "default_small_motion_scale"})
         target = op.target
         source = op.source
         if promote_to_move:
@@ -402,6 +419,7 @@ def enrich_task(parsed: TaskParseLLMOutput, instruction: str, motion_policy: Mot
             depends_on=[f"op-{index}"] if index else [],
             motion_direction=direction,
             distance_m=distance_m,
+            motion_scale=motion_scale,
             placement_target=op.placement_target,
         ))
     task_types = list(dict.fromkeys(operation.task_type for operation in operations))
