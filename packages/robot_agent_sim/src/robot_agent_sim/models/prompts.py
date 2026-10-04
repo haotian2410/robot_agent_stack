@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from importlib.resources import files
 
 
 TASK_UNDERSTANDING_PROMPT = """你是机器人任务的语义解析器。
@@ -142,19 +142,18 @@ placement_target 已由上游确定，不得重新解释。最终放置统一使
 
 输出前检查：intent 非空；operation id/顺序完整；每个 role 属于 valid_roles；role_bindings 为 null 的 role 未被使用；placement_target 未被修改；没有物理坐标、距离或轨迹。"""
 
-_PROMPT_DIR = Path(__file__).with_name("prompt_templates")
+def _load_prompt(filename: str) -> str:
+    content = files("robot_agent_sim.models.prompt_templates").joinpath(filename).read_text(encoding="utf-8")
+    if not content.strip():
+        raise RuntimeError(f"prompt template is empty: {filename}")
+    return content
 
 
-def _load_prompt(filename: str, fallback: str) -> str:
-    path = _PROMPT_DIR / filename
-    return path.read_text(encoding="utf-8") if path.is_file() else fallback
-
-
-# Checked-in text files are the runtime source of truth. Embedded strings
-# remain as a source-tree fallback when package data is unavailable.
-TASK_UNDERSTANDING_PROMPT = _load_prompt("task_understanding_v2.txt", TASK_UNDERSTANDING_PROMPT)
-VISION_GROUNDING_PROMPT = _load_prompt("vision_grounding_v1.txt", VISION_GROUNDING_PROMPT)
-SKILL_PLANNING_PROMPT = _load_prompt("skill_planning_v2.txt", SKILL_PLANNING_PROMPT)
+# Checked-in text files are the runtime source of truth. Missing package data
+# is an installation error rather than a silent fallback to stale Python text.
+TASK_UNDERSTANDING_PROMPT = _load_prompt("task_understanding_v2.txt")
+VISION_GROUNDING_PROMPT = _load_prompt("vision_grounding_v1.txt")
+SKILL_PLANNING_PROMPT = _load_prompt("skill_planning_v2.txt")
 
 
 def prompt_payload(value) -> str:

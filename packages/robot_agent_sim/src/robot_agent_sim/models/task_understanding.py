@@ -171,9 +171,9 @@ def _extract_explicit_motion_spans(instruction: str) -> list[ExplicitMotionSpan]
         phrase = instruction[end:window_end]
         if distance_m is not None:
             motion_scale = None
-        elif any(token in phrase for token in ("大幅", "很多", "很远", "远一些", "远一点")):
+        elif any(token in phrase for token in ("大幅", "很多", "很远")):
             motion_scale = MotionScale.LARGE
-        elif any(token in phrase for token in ("一些", "一段", "适中", "中等", "不少")):
+        elif any(token in phrase for token in ("一些", "一段", "适中", "中等", "不少", "远一些")):
             motion_scale = MotionScale.MEDIUM
         else:
             motion_scale = MotionScale.SMALL

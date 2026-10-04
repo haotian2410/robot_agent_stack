@@ -461,6 +461,7 @@ class PipelineEngine:
                 else "task_semantic_invalid" if "task_semantic_invalid:" in message
                 else "clarification_required" if "support_surface_missing" in message or "named_support_surface_missing" in message or "placement_clarification_required" in message
                 else "physical_capability_conflict" if "placement_no_feasible_candidate" in message or "placement_capacity_exceeded" in message
+                else "physical_capability_conflict" if "motion_scale_geometry_missing" in message
                 else "asset_missing" if "asset_missing" in message
                 else "unsupported_recipe" if "unsupported_recipe" in message
                 else "grounding_ambiguous" if "grounding_ambiguous" in message
